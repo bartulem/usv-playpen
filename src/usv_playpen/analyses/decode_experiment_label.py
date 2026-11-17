@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import re
 
+from ..yaml_utils import load_session_metadata
+
 
 def extract_information(experiment_code: str | None = None) -> dict | None:
     """
@@ -114,3 +116,36 @@ def extract_information(experiment_code: str | None = None) -> dict | None:
         return output_dict
 
     return None
+
+
+def session_is_playback(root_directory: str) -> bool:
+    """
+    Description
+    -----------
+    Tells whether a session is a USV playback session from its experimental
+    code: the ``session_experiment_code`` in the session's metadata YAML must
+    decode (``extract_information``) to the 'playback' experiment type, the
+    letter P (e.g. ``EPQL1MS``). A session with no code on record (no
+    metadata YAML, no ``Session`` block or no ``session_experiment_code``) is
+    not treated as a playback session, since the code is the only record of
+    one.
+
+    Parameters
+    ----------
+    root_directory (str)
+        Session root directory holding the ``*_metadata.yaml``.
+
+    Returns
+    -------
+    is_playback (bool)
+        True for a playback session.
+    """
+
+    metadata, _ = load_session_metadata(root_directory)
+    if (metadata is None
+            or 'Session' not in metadata
+            or not isinstance(metadata['Session'], dict)
+            or 'session_experiment_code' not in metadata['Session']):
+        return False
+    experiment_info = extract_information(str(metadata['Session']['session_experiment_code']))
+    return experiment_info is not None and 'playback' in experiment_info['experiment_type']

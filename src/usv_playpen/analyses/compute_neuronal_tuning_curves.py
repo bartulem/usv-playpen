@@ -73,6 +73,7 @@ from ..os_utils import (
 from ..time_utils import is_gui_context, smart_wait
 from ..yaml_utils import extract_animal_sexes
 from .compute_behavioral_features import FeatureZoo
+from .decode_experiment_label import session_is_playback
 
 CONTINUOUS_PROPERTIES = (
     "duration",
@@ -1071,6 +1072,385 @@ def ibi_bout_onset_block(spike_times: np.ndarray, usv_starts: np.ndarray, runs: 
     return payload
 
 
+def load_playback_usvs(root_directory: str | pathlib.Path) -> dict:
+    """
+    Description
+    -----------
+    Loads the played USVs of a playback session (the
+    ``*_played_usvs.csv`` written by ``align-usv-playback``) and the
+    session length, and derives the played bouts.
+
+    Parameters
+    ----------
+    root_directory (str | pathlib.Path)
+        Session root directory.
+
+    Returns
+    -------
+    playback_inputs (dict)
+        ``usv_starts`` / ``usv_stops`` (session seconds, sorted),
+        ``usv_bout_id``, ``usv_position_in_bout`` (1-based), ``bout_onsets``
+        (first USV onset), ``bout_offsets`` (latest USV offset), and
+        ``duration_seconds`` (tracking length).
+
+    Raises
+    ------
+    FileNotFoundError
+        No played-USV table or no tracking .h5 in the session (a playback
+        session needs both; run ``align-usv-playback`` first).
+    """
+
+    root = pathlib.Path(root_directory)
+    csv_path = first_match_or_raise(
+        root=root, pattern="*_played_usvs.csv", recursive=True,
+        label="played-USV table (run align-usv-playback)",
+    )
+    table = pls.read_csv(csv_path).sort("start")
+    h5_path = first_match_or_raise(
+        root=root, pattern="[0-9]*_points3d_translated_rotated_metric.h5*", recursive=True,
+        label="translated/rotated mouse points3d .h5",
+    )
+    with h5py.File(h5_path, mode="r") as f:
+        duration_seconds = float(f["tracks"].shape[0]) / float(f["recording_frame_rate"][()])
+    starts = table["start"].to_numpy().astype(float)
+    stops = table["stop"].to_numpy().astype(float)
+    bout_id = table["bout_id"].to_numpy().astype(np.int64)
+    bout_ids = np.unique(bout_id)
+    bout_onsets = np.array([starts[bout_id == b].min() for b in bout_ids], dtype=float)
+    bout_offsets = np.array([stops[bout_id == b].max() for b in bout_ids], dtype=float)
+    order = np.argsort(bout_onsets)
+    return {
+        "usv_starts": starts,
+        "usv_stops": stops,
+        "usv_bout_id": bout_id,
+        "usv_position_in_bout": table["position_in_bout"].to_numpy().astype(np.int64),
+        "bout_onsets": bout_onsets[order],
+        "bout_offsets": bout_offsets[order],
+        "duration_seconds": duration_seconds,
+        "csv_name": csv_path.name,
+    }
+
+
+def _aligned_spikes(spike_times: np.ndarray, anchors: np.ndarray, window: tuple[float, float]) -> list:
+    """
+    Description
+    -----------
+    Spike times relative to each anchor, within a window around it (the raster rows).
+
+    Parameters
+    ----------
+    spike_times (np.ndarray)
+        Sorted spike times in seconds.
+    anchors (np.ndarray)
+        Anchor times in seconds.
+    window (tuple[float, float])
+        Window start and end relative to the anchor, in seconds.
+
+    Returns
+    -------
+    rows (list[np.ndarray])
+        One float32 array of relative spike times per anchor.
+    """
+
+    lo = np.searchsorted(spike_times, anchors + window[0], side="left")
+    hi = np.searchsorted(spike_times, anchors + window[1], side="right")
+    return [(spike_times[a:b] - anchor).astype(np.float32) for a, b, anchor in zip(lo, hi, anchors, strict=True)]
+
+
+def _peth_from_rows(rows: list, window: tuple[float, float], bin_seconds: float) -> dict:
+    """
+    Description
+    -----------
+    Mean firing rate and its SEM across raster rows, binned over a window.
+
+    Parameters
+    ----------
+    rows (list[np.ndarray])
+        Relative spike times per anchor (from `_aligned_spikes`).
+    window (tuple[float, float])
+        Window start and end in seconds.
+    bin_seconds (float)
+        Bin width in seconds.
+
+    Returns
+    -------
+    peth (dict)
+        ``bin_edges``, ``bin_centers``, ``rate_mean`` and ``rate_sem`` (spikes/s).
+    """
+
+    n_bins = round((window[1] - window[0]) / bin_seconds)
+    edges = window[0] + np.arange(n_bins + 1) * bin_seconds
+    counts = np.vstack([np.histogram(row, bins=edges)[0] for row in rows]) if rows else np.zeros((0, n_bins))
+    rates = counts / bin_seconds
+    n_rows = rates.shape[0]
+    return {
+        "bin_edges": edges,
+        "bin_centers": 0.5 * (edges[:-1] + edges[1:]),
+        "rate_mean": rates.mean(axis=0) if n_rows else np.full(n_bins, np.nan),
+        "rate_sem": rates.std(axis=0, ddof=1) / np.sqrt(n_rows) if n_rows > 1 else np.full(n_bins, np.nan),
+    }
+
+
+def peri_onset_window_rates(spike_times: np.ndarray, usv_starts: np.ndarray, usv_stops: np.ndarray,
+                            windows: dict) -> dict:
+    """
+    Description
+    -----------
+    Firing rate in short windows around every played USV's onset (for
+    example prior -60 to -20 ms, USV -20 to +20 ms, post +20 to +60 ms). A
+    window marked clean keeps only the USVs for which no other played USV
+    overlaps that window, so a prior or post rate is never taken while a
+    neighbouring USV plays; an unmarked window keeps every USV.
+
+    Parameters
+    ----------
+    spike_times (np.ndarray)
+        Sorted spike times in seconds.
+    usv_starts, usv_stops (np.ndarray)
+        Played USV onsets and offsets in seconds.
+    windows (dict)
+        ``{name: {"seconds": [start, end], "clean": bool}}``, start and end
+        relative to the USV onset.
+
+    Returns
+    -------
+    rates (dict)
+        Per window name: ``mean`` and ``sem`` (spikes/s across the kept USVs),
+        ``n`` (USVs kept), ``seconds`` and ``clean``.
+    """
+
+    rates = {}
+    for name, window in windows.items():
+        lo = usv_starts + float(window["seconds"][0])
+        hi = usv_starts + float(window["seconds"][1])
+        keep = np.ones(usv_starts.size, dtype=bool)
+        if bool(window["clean"]):
+            overlaps = (usv_starts[None, :] < hi[:, None]) & (usv_stops[None, :] > lo[:, None])
+            np.fill_diagonal(overlaps, False)
+            keep = ~overlaps.any(axis=1)
+        counts = np.searchsorted(spike_times, hi[keep], side="left") - np.searchsorted(spike_times, lo[keep], side="left")
+        per_usv = counts / (hi[keep] - lo[keep])
+        rates[name] = {
+            "mean": float(per_usv.mean()) if per_usv.size else np.nan,
+            "sem": float(per_usv.std(ddof=1) / np.sqrt(per_usv.size)) if per_usv.size > 1 else np.nan,
+            "n": int(per_usv.size),
+            "seconds": (float(window["seconds"][0]), float(window["seconds"][1])),
+            "clean": bool(window["clean"]),
+        }
+    return rates
+
+
+def _playback_modulation(spike_times: np.ndarray, bout_onsets: np.ndarray, bout_stops: np.ndarray,
+                         baseline_window: tuple[float, float], keep: np.ndarray) -> dict:
+    """
+    Description
+    -----------
+    The playback modulation index: per kept bout, the firing rate from bout
+    onset to bout offset plus the response lag (sound) against the rate in the
+    silence before the bout (baseline window); index =
+    (mean sound - mean silence) / (mean sound + mean silence).
+
+    Parameters
+    ----------
+    spike_times (np.ndarray)
+        Sorted spike times in seconds.
+    bout_onsets (np.ndarray)
+        Bout onsets in seconds.
+    bout_stops (np.ndarray)
+        Bout offsets plus the response lag, in seconds.
+    baseline_window (tuple[float, float])
+        Baseline window relative to bout onset, in seconds.
+    keep (np.ndarray of bool)
+        Bouts whose baseline window is pure silence.
+
+    Returns
+    -------
+    modulation (dict)
+        ``index``, ``fr_sound``, ``fr_silence`` (means over kept bouts) and the
+        per-bout ``fr_sound_per_bout`` / ``fr_silence_per_bout``.
+    """
+
+    onsets, stops = bout_onsets[keep], bout_stops[keep]
+    sound = (np.searchsorted(spike_times, stops, side="left") - np.searchsorted(spike_times, onsets, side="left")) / (stops - onsets)
+    base_lo, base_hi = onsets + baseline_window[0], onsets + baseline_window[1]
+    silence = (np.searchsorted(spike_times, base_hi, side="left") - np.searchsorted(spike_times, base_lo, side="left")) / (base_hi - base_lo)
+    fr_sound = float(sound.mean()) if sound.size else np.nan
+    fr_silence = float(silence.mean()) if silence.size else np.nan
+    denominator = fr_sound + fr_silence
+    index = (fr_sound - fr_silence) / denominator if np.isfinite(denominator) and denominator > 0 else np.nan
+    return {"index": index, "fr_sound": fr_sound, "fr_silence": fr_silence,
+            "fr_sound_per_bout": sound, "fr_silence_per_bout": silence}
+
+
+def _two_sided_shift_p(observed: float, null: np.ndarray) -> float:
+    """
+    Description
+    -----------
+    Two-sided empirical p of an observed value against its shift null, measured
+    as the distance from the null mean (same rule as `ibi_bout_onset_block`).
+
+    Parameters
+    ----------
+    observed (float)
+        Observed statistic.
+    null (np.ndarray)
+        Null draws.
+
+    Returns
+    -------
+    p (float)
+        (1 + number of draws at least as far from the null mean) / (draws + 1),
+        or NaN when the observed value or every draw is undefined.
+    """
+
+    finite = null[np.isfinite(null)]
+    if not np.isfinite(observed) or finite.size == 0:
+        return np.nan
+    center = finite.mean()
+    return (1 + int(np.sum(np.abs(finite - center) >= abs(observed - center)))) / (finite.size + 1)
+
+
+def playback_response_block(spike_times: np.ndarray, playback: dict, cfg: dict, shuffle_offsets: np.ndarray) -> dict:
+    """
+    Description
+    -----------
+    One unit's responses to the played USVs of a playback session:
+
+      bout_onset / bout_offset   raster rows, bout durations and PETH around
+                                 every bout's first USV onset / last USV offset
+      usv_onset                  raster rows, USV durations and PETH around
+                                 every USV onset, with each row's position in
+                                 its bout
+      peri_onset                 firing rate in the baseline (the silence
+                                 before each kept bout) and in short windows
+                                 around every USV onset
+                                 (`peri_onset_window_rates`)
+      modulation                 the playback modulation index
+                                 (`_playback_modulation`) over bouts whose
+                                 baseline window is pure silence, with a
+                                 paired Wilcoxon p and a shift-null p
+
+    The modulation null shifts the spike train circularly against the fixed
+    playback schedule (which the animal cannot influence), so it asks whether
+    the unit's firing follows the playback rather than whether the playback
+    has structure.
+
+    Parameters
+    ----------
+    spike_times (np.ndarray)
+        Sorted spike times in seconds (session time).
+    playback (dict)
+        Output of `load_playback_usvs`.
+    cfg (dict)
+        The `playback_response` settings sub-block.
+    shuffle_offsets (np.ndarray)
+        Circular shifts in seconds, one per null draw.
+
+    Returns
+    -------
+    payload (dict)
+        The blocks above plus ``n_bouts``, ``n_usvs``, ``n_shuffles`` and the settings used.
+    """
+
+    duration = playback["duration_seconds"]
+    bout_window = (float(cfg["bout_window_seconds"][0]), float(cfg["bout_window_seconds"][1]))
+    usv_window = (float(cfg["usv_window_seconds"][0]), float(cfg["usv_window_seconds"][1]))
+    baseline_window = (float(cfg["baseline_window_seconds"][0]), float(cfg["baseline_window_seconds"][1]))
+    response_lag = float(cfg["response_lag_seconds"])
+    bout_onsets, bout_offsets = playback["bout_onsets"], playback["bout_offsets"]
+    sound_stops = bout_offsets + response_lag
+    # A bout's baseline must be pure silence: it starts after the previous bout's
+    # sound (offset plus the response lag) and after the session start.
+    previous_sound_end = np.concatenate([[-np.inf], sound_stops[:-1]])
+    keep = (bout_onsets + baseline_window[0] >= previous_sound_end) & (bout_onsets + baseline_window[0] >= 0.0)
+
+    bout_onset_rows = _aligned_spikes(spike_times, bout_onsets, bout_window)
+    bout_offset_rows = _aligned_spikes(spike_times, bout_offsets, bout_window)
+    usv_rows = _aligned_spikes(spike_times, playback["usv_starts"], usv_window)
+
+    observed_modulation = _playback_modulation(spike_times, bout_onsets, sound_stops, baseline_window, keep)
+
+    null_index = np.empty(shuffle_offsets.size)
+    for draw, offset in enumerate(shuffle_offsets):
+        shifted = _circular_shift_spike_times(spike_times, duration, float(offset))
+        null_index[draw] = _playback_modulation(shifted, bout_onsets, sound_stops, baseline_window, keep)["index"]
+
+    sound, silence = observed_modulation["fr_sound_per_bout"], observed_modulation["fr_silence_per_bout"]
+    if sound.size and not np.array_equal(sound, silence):
+        wilcoxon_p = float(stats.wilcoxon(sound, silence).pvalue)
+    else:
+        wilcoxon_p = np.nan
+
+    return {
+        "n_bouts": int(bout_onsets.size),
+        "n_bouts_modulation": int(keep.sum()),
+        "n_usvs": int(playback["usv_starts"].size),
+        "n_shuffles": int(shuffle_offsets.size),
+        "settings": {key: cfg[key] for key in cfg},
+        "bout_onset": {"rows": bout_onset_rows, "window": bout_window, "durations": bout_offsets - bout_onsets,
+                       **_peth_from_rows(bout_onset_rows, bout_window, float(cfg["bout_bin_seconds"]))},
+        "bout_offset": {"rows": bout_offset_rows, "window": bout_window, "durations": bout_offsets - bout_onsets,
+                        **_peth_from_rows(bout_offset_rows, bout_window, float(cfg["bout_bin_seconds"]))},
+        "usv_onset": {"rows": usv_rows, "window": usv_window,
+                      "durations": playback["usv_stops"] - playback["usv_starts"],
+                      "position_in_bout": playback["usv_position_in_bout"],
+                      **_peth_from_rows(usv_rows, usv_window, float(cfg["usv_bin_seconds"]))},
+        "peri_onset": {
+            "baseline": {
+                "mean": float(np.mean(silence)) if silence.size else np.nan,
+                "sem": float(np.std(silence, ddof=1) / np.sqrt(silence.size)) if silence.size > 1 else np.nan,
+                "n": int(silence.size),
+                "seconds": baseline_window,
+                "clean": True,
+            },
+            **peri_onset_window_rates(spike_times, playback["usv_starts"], playback["usv_stops"],
+                                      cfg["peri_onset_windows"]),
+        },
+        "modulation": {
+            **observed_modulation,
+            "wilcoxon_pvalue": wilcoxon_p,
+            "p_two_sided": _two_sided_shift_p(observed_modulation["index"], null_index),
+            **_percentiles_block(null_index),
+        },
+    }
+
+
+def playback_triage_summary(payload: dict) -> dict:
+    """
+    Description
+    -----------
+    The scalars of one unit's `playback_response` block that the cross-session
+    unit-triage aggregator needs, so it never has to load the rasters: the
+    playback modulation index with its shift-null and Wilcoxon p-values and the
+    rates behind it, and the counts the tests rest on.
+
+    Parameters
+    ----------
+    payload (dict)
+        Output of `playback_response_block`.
+
+    Returns
+    -------
+    summary (dict)
+        ``modulation_index``, ``modulation_p_two_sided``,
+        ``modulation_wilcoxon_pvalue``, ``fr_sound``, ``fr_silence``,
+        ``n_bouts``, ``n_bouts_modulation``, ``n_usvs`` and ``n_shuffles``.
+    """
+
+    modulation = payload["modulation"]
+    return {
+        "modulation_index": float(modulation["index"]),
+        "modulation_p_two_sided": float(modulation["p_two_sided"]),
+        "modulation_wilcoxon_pvalue": float(modulation["wilcoxon_pvalue"]),
+        "fr_sound": float(modulation["fr_sound"]),
+        "fr_silence": float(modulation["fr_silence"]),
+        "n_bouts": int(payload["n_bouts"]),
+        "n_bouts_modulation": int(payload["n_bouts_modulation"]),
+        "n_usvs": int(payload["n_usvs"]),
+        "n_shuffles": int(payload["n_shuffles"]),
+    }
+
+
 def _gaussian_smooth_1d(
     data: np.ndarray, sigma: float, axis: int = -1, preserve_nan: bool = True,
     circular: bool = False,
@@ -1834,7 +2214,9 @@ class NeuronalTuning(FeatureZoo):
         vocal path owns `usv_peth`, `usv_property_tuning`,
         `usv_category_tuning`, `usv_category_peth`, `usv_ibi_bout_onset`,
         `usv_metadata` and the same-named `triage_stats` blocks plus
-        `triage_stats["vmi"]`. Without this a temporal offset, an emitter
+        `triage_stats["vmi"]`; the playback path owns `playback_response` and
+        `triage_stats["playback"]`.
+        Without this a temporal offset, an emitter
         side or a category that the new run no longer produces would keep
         the old run's numbers in the pkl, unmarked.
 
@@ -1843,7 +2225,7 @@ class NeuronalTuning(FeatureZoo):
         existing (dict)
             The loaded pkl payload; modified in place.
         side (str)
-            ``"behavioral"`` or ``"vocal"``.
+            ``"behavioral"``, ``"vocal"`` or ``"playback"``.
 
         Returns
         -------
@@ -1858,8 +2240,11 @@ class NeuronalTuning(FeatureZoo):
                             "usv_ibi_bout_onset"]
             top_keys = [*vocal_blocks, "usv_metadata"]
             triage_keys = [*vocal_blocks, "vmi"]
+        elif side == "playback":
+            top_keys = ["playback_response"]
+            triage_keys = ["playback"]
         else:
-            msg = f"side must be 'behavioral' or 'vocal', got {side!r}."
+            msg = f"side must be 'behavioral', 'vocal' or 'playback', got {side!r}."
             raise ValueError(msg)
         for key in top_keys:
             existing.pop(key, None)
@@ -2143,6 +2528,16 @@ class NeuronalTuning(FeatureZoo):
                 )
                 self._save_partial_to_cluster_pkl(cluster_file.stem, beh_partial, "behavioral")
 
+        # playback side: a playback session (experimental code with P) gets the
+        # responses to the played USVs, and its USV summary, which holds the
+        # played USVs as recorded rather than the animal's own, is not tuned to.
+        if session_is_playback(str(root)):
+            self._compute_playback_side(cluster_files, message_output)
+            message_output("  vocal skipped: playback session (its USV summary holds the played USVs).")
+            self._report_cleared_side(cluster_files, "vocal", message_output)
+            return
+        self._report_cleared_side(cluster_files, "playback", message_output)
+
         # vocal side
         voc_inputs = self._load_vocal_inputs()
         if voc_inputs is None:
@@ -2186,6 +2581,51 @@ class NeuronalTuning(FeatureZoo):
                 f"in {root}: {'; '.join(failed_clusters)}"
             )
             raise RuntimeError(failure_message)
+
+    def _compute_playback_side(self, cluster_files: list, message_output) -> None:
+        """
+        Description
+        -----------
+        Computes every cluster's responses to the played USVs of a playback
+        session (`playback_response_block`) and writes them into its pkl under
+        `playback_response`, with the scalar summary the unit-triage aggregator
+        reads under `triage_stats["playback"]` (`playback_triage_summary`). The
+        shift-null offsets are drawn once per session, from
+        [shuffle_guard_seconds, duration - shuffle_guard_seconds].
+
+        Parameters
+        ----------
+        cluster_files (list[pathlib.Path])
+            The session's spike .npy files.
+        message_output (Callable)
+            Message sink.
+
+        Returns
+        -------
+        None
+        """
+
+        params = self.tuning_parameters_dict
+        cfg = params["playback_response"]
+        playback = load_playback_usvs(self.root_directory)
+        duration = playback["duration_seconds"]
+        shuffle_offsets = _generate_shuffle_offsets(
+            n_shuffles=int(cfg["n_shuffles"]),
+            shuffle_min_seconds=float(cfg["shuffle_guard_seconds"]),
+            shuffle_max_seconds=duration - float(cfg["shuffle_guard_seconds"]),
+            seed=params["shuffle_seed"],
+        )
+        message_output(f"  computing playback responses ({playback['usv_starts'].size} played USVs in "
+                       f"{playback['bout_onsets'].size} bouts, {playback['csv_name']}) ...")
+        for cluster_file in tqdm(cluster_files, desc="playback responses per cluster"):
+            spike_times = np.sort(np.asarray(np.load(cluster_file)[0, :], dtype=float))
+            payload = playback_response_block(spike_times=spike_times, playback=playback, cfg=cfg,
+                                              shuffle_offsets=shuffle_offsets)
+            self._save_partial_to_cluster_pkl(
+                cluster_file.stem,
+                {"playback_response": payload, "triage_stats": {"playback": playback_triage_summary(payload)}},
+                "playback",
+            )
 
     def _report_cleared_side(self, cluster_files: list, side: str, message_output) -> None:
         """

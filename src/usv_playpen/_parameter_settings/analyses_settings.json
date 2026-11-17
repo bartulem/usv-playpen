@@ -217,6 +217,21 @@
       "response_window_seconds": 0.15,
       "response_kernel_seconds": 0.02
     },
+    "playback_response": {
+      "bout_window_seconds": [-2.0, 3.0],
+      "bout_bin_seconds": 0.02,
+      "usv_window_seconds": [-0.1, 0.25],
+      "usv_bin_seconds": 0.005,
+      "peri_onset_windows": {
+        "prior": { "seconds": [-0.06, -0.02], "clean": true },
+        "usv": { "seconds": [-0.02, 0.02], "clean": false },
+        "post": { "seconds": [0.02, 0.06], "clean": true }
+      },
+      "response_lag_seconds": 0.05,
+      "baseline_window_seconds": [-4.0, -0.5],
+      "n_shuffles": 1000,
+      "shuffle_guard_seconds": 20.0
+    },
     "vocal_require_clean_post_anchor": true,
     "vocal_require_clean_prior_anchor": false,
     "n_usv_min_self": 30,

@@ -590,6 +590,8 @@ Noise segments are always dropped. Squeaks are dropped from the self side's anch
 
 Behavioral and vocal payloads are produced together and serialized into a single per-cluster pickle; a re-run replaces each part's keys whole, and a part that is skipped (missing inputs, no eligible emitter side) or fails for a cluster removes that part's previous results from the pickle rather than leaving them next to the new ones. A cluster whose vocal part fails is logged and the remaining clusters are still computed, but the session then ends with an error naming every failed cluster, so a partial run is never reported as finished.
 
+**Playback sessions** (experimental code with the playback letter P, e.g. ``EPQL1MS``) are handled differently: their USV summary holds the played USVs as recorded rather than the animal's own, so the vocal part is skipped, and a ``playback_response`` block is computed instead from the session's ``*_played_usvs.csv`` (written beforehand by ``align-usv-playback``, see *Align USV playback* in the processing docs; a playback session without it raises). Per unit it holds: rasters and mean rates around every played bout's onset and offset and around every played USV's onset; the mean firing rate in the baseline (the silence before each bout) and in short windows around every USV onset (prior, USV and post; the prior and post windows only from USVs no other played USV overlaps there); and the playback modulation index, (rate during the bout - rate in the silence before it) / (their sum), over the bouts whose baseline window is pure silence. The index gets a circular-shift null that shifts the spike train against the fixed playback schedule (on a no-playback session with the schedule transplanted, 5.8% of 688 units fell below p = 0.05 and 1.0% below 0.01) and a paired Wilcoxon p across bouts. ``generate-rm-figs`` draws them on a playback page.
+
 The computation lives in ``usv_playpen.analyses.compute_neuronal_tuning_curves``. To trigger this in the GUI, list the root directories of interest, select *Compute neuronal tuning curves*, click *Next* and then *Analyze* (a progress bar will appear in the terminal while the analysis is running):
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/analyze_step_2.png
@@ -647,6 +649,21 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
             "peak_search_seconds": [-0.25, 1.0],
             "response_window_seconds": 0.15,
             "response_kernel_seconds": 0.02
+        },
+        "playback_response": {
+            "bout_window_seconds": [-2.0, 3.0],
+            "bout_bin_seconds": 0.02,
+            "usv_window_seconds": [-0.1, 0.25],
+            "usv_bin_seconds": 0.005,
+            "peri_onset_windows": {
+              "prior": {"seconds": [-0.06, -0.02], "clean": true},
+              "usv": {"seconds": [-0.02, 0.02], "clean": false},
+              "post": {"seconds": [0.02, 0.06], "clean": true}
+            },
+            "response_lag_seconds": 0.05,
+            "baseline_window_seconds": [-4.0, -0.5],
+            "n_shuffles": 1000,
+            "shuffle_guard_seconds": 20.0
         },
         "vocal_require_clean_post_anchor": true,
         "vocal_require_clean_prior_anchor": false,
@@ -892,6 +909,21 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
    :Options: a positive integer number of pairs
    :Default: ``25``
    :Notes: above it the normal approximation is used.
+
+.. _ana-calculate-neuronal-tuning-curves-playback-response:
+
+``playback_response``
+   Settings of the playback-session responses (``playback_response`` in the pkl; playback sessions only).
+
+   :Options:
+      * ``bout_window_seconds`` / ``bout_bin_seconds`` — raster window around bout onset and offset, and the mean-rate bin
+      * ``usv_window_seconds`` / ``usv_bin_seconds`` — the same around every played USV's onset
+      * ``peri_onset_windows`` — the firing-rate windows around every played USV's onset, relative to it (prior -60 to -20 ms, USV -20 to +20 ms, post +20 to +60 ms); a window marked ``clean`` keeps only the USVs that no other played USV overlaps in that window
+      * ``response_lag_seconds`` — added to each bout's offset for the modulation index's sound window
+      * ``baseline_window_seconds`` — the silence before each bout the sound is compared to; a bout whose window reaches into the previous bout's sound (plus the response lag) or before the session start is left out of the index
+      * ``n_shuffles`` / ``shuffle_guard_seconds`` — shift-null draws, with shifts uniform in [guard, session length - guard]; the seed is ``shuffle_seed``
+   :Default: see the JSON above
+   :Notes: with the 2025 playback files the silence before a bout is 2.5, 5, 7.5 or 10 s, so the default baseline window keeps the ~88% of bouts that follow at least 5 s of silence.
 
 .. _ana-calculate-neuronal-tuning-curves-ibi-bout-onset:
 
