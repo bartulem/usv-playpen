@@ -337,6 +337,102 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file also contai
    sessions.
 
 
+Align USV playback
+~~~~~~~~~~~~~~~~~~
+In a playback session the speaker plays a pre-made file of USVs, and this step places every USV of that file on the session (video) timeline, so analyses read the played USVs from the file that was played rather than from detections. It runs only for playback sessions: the experimental code in the session's metadata (``session_experiment_code``) must contain the playback letter **P**; any other session is skipped with a message. It is not in the GUI; run it with the ``align-usv-playback`` command, or set ``conduct_usv_playback_alignment`` to ``true`` in *processing_booleans*. It needs the cropped audio (*Crop audio files*) and, in the session metadata, ``session_usv_playback_file``: the name of the WAV the playback device played (e.g. ``female_usv_playback_1080s_20250822_090417_192kHz.wav``).
+
+The playback device plays a 192 kHz copy (its sound card's maximum rate) of a 250 kHz file that ``generate-naturalistic-usv-playback`` wrote together with two side-cars, ``_spacing.txt`` (the sample count of every chunk at 250 kHz) and ``_usvids.txt`` (each chunk's label: ``ISI`` for the silence between bouts, ``IUI`` for the silence between USVs of a bout, otherwise the USV clip's name). These give every clip's exact position in the file. The step then:
+
+    #. finds the playback start in the recording: the playback device holds its TTL line low while it plays, recorded in the least significant bit of master channel 3; the falling edge is the start (the rising edge trails the actual end by a few tens of ms and is only recorded)
+    #. picks the microphone that hears the speaker best, by cross-correlating the file's first bout with every cropped channel (channels excluded in the metadata are skipped)
+    #. cross-correlates every bout of the file with that microphone around its expected time, which gives the lag of each bout behind the TTL
+    #. fits the lags with a straight line in file time; the intercept is the playback device's start delay (79-115 ms across the 2025 sessions) and the slope the drift of its clock (about -25 to -27 ppm, i.e. ~28 ms over 18 min); the fit residuals are below 0.1 ms in typical sessions
+    #. measures each USV's own onset and offset on the noise-free file (where the clip's high-passed envelope crosses 10% of its peak, which excludes the silence padded around the USV inside the clip) and maps them to session time with the fit
+
+.. code-block:: text
+
+    /mnt/falkner/Bartul/Data/20250911_202056/audio
+    ├── **20250911_202056_played_usvs.csv**
+    ├── **20250911_202056_playback_alignment.json**
+
+The CSV has one row per played USV: ``usv_id``, ``bout_id``, ``position_in_bout`` (1-based), ``start`` / ``stop`` / ``duration`` (session seconds, the USV's own extent), ``clip_start`` / ``clip_stop`` (session seconds, the whole clip) and ``source_clip``. The JSON holds the TTL edges, the microphone, the delay, the drift, the fit residuals, every bout's lag and match quality, and the settings used.
+
+.. code-block:: json
+
+    "align_usv_playback": {
+        "playback_files_directory": "/mnt/falkner/Bartul/usv_playback_experiments/old_playback/naturalistic_usv_playback_files",
+        "ttl_device": "m",
+        "ttl_channel": 3,
+        "highpass_cutoff_hz": 20000,
+        "initial_lag_search_seconds": 0.5,
+        "lag_search_seconds": 0.15,
+        "min_peak_over_median": 8.0,
+        "min_confident_bout_fraction": 0.9,
+        "envelope_smoothing_seconds": 0.0005,
+        "usv_extent_threshold_fraction": 0.1
+    }
+
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - ``playback_files_directory``
+     - see above
+     - directory path
+   * - ``ttl_device`` / ``ttl_channel``
+     - ``'m'`` / ``3``
+     - ``'m'``, ``'s'`` / channel 1-12
+   * - ``highpass_cutoff_hz``
+     - ``20000``
+     - Hz > 0
+   * - ``initial_lag_search_seconds``
+     - ``0.5``
+     - seconds > 0
+   * - ``lag_search_seconds``
+     - ``0.15``
+     - seconds > 0
+   * - ``min_peak_over_median``
+     - ``8.0``
+     - > 1
+   * - ``min_confident_bout_fraction``
+     - ``0.9``
+     - 0-1
+   * - ``envelope_smoothing_seconds``
+     - ``0.0005``
+     - seconds > 0
+   * - ``usv_extent_threshold_fraction``
+     - ``0.1``
+     - 0-1
+
+``playback_files_directory``
+   The folder holding the playback WAVs (the original 250 kHz file named like the played 192 kHz file without ``_192kHz``) and their ``_spacing.txt`` / ``_usvids.txt`` side-cars.
+
+``ttl_device`` / ``ttl_channel``
+   The device and channel whose least significant bit records the playback TTL.
+
+``highpass_cutoff_hz``
+   Both the file and the recording are high-passed here before cross-correlation and envelope measurement, removing low-frequency room noise.
+
+``initial_lag_search_seconds``
+   How far after the TTL drop the first bout is searched for (the start delay is not known in advance).
+
+``lag_search_seconds``
+   How far either side of the running lag estimate each later bout is searched for.
+
+``min_peak_over_median``
+   A bout counts as confidently matched when its cross-correlation envelope peaks at least this many times above its median; only confident bouts enter the fit and update the running lag.
+
+``min_confident_bout_fraction``
+   The step raises instead of writing a table when fewer bouts than this match confidently.
+
+``envelope_smoothing_seconds`` / ``usv_extent_threshold_fraction``
+   Each clip's envelope is smoothed over this window, and the USV spans the samples where it reaches this fraction of the clip's peak. Hand labels on one session placed onsets 2-6 ms before and offsets ~3 ms after these edges, with no trend across the session.
+
+
 Concatenate e-phys files
 ~~~~~~~~~~~~~~~~~~~~~~~~
 To run the concatenation of e-phys files (ap.bin), you need to list *all* the root directories of interest *in order you want them to be concatenated*, select *Concatenate e-phys files*, click *Next* and then *Process*:

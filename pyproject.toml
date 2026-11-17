@@ -124,6 +124,7 @@ multichannel-to-single-ch = "usv_playpen.processing.preprocess_data:multichannel
 crop-wav-files = "usv_playpen.processing.preprocess_data:crop_wav_files_to_video_cli"
 av-sync-check = "usv_playpen.processing.preprocess_data:av_sync_check_cli"
 ev-sync-check = "usv_playpen.processing.preprocess_data:ev_sync_check_cli"
+align-usv-playback = "usv_playpen.processing.preprocess_data:align_usv_playback_cli"
 hpss-audio = "usv_playpen.processing.preprocess_data:hpss_audio_cli"
 bp-filter-audio = "usv_playpen.processing.preprocess_data:bp_filter_audio_files_cli"
 concatenate-audio-files = "usv_playpen.processing.preprocess_data:concatenate_audio_files_cli"

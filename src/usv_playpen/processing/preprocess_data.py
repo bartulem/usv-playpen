@@ -155,6 +155,8 @@ class Stylist:
         (5) checks audio-video sync using Arduino-controlled IR light pulses
             and plots the summary of AV sync and phidget measurements
         (6) conducts ephys-video sync validation
+        (6b) places the played USVs on the session timeline (playback
+             sessions only, i.e. experimental code with P)
         (7) cleans audio background with harmonic-percussive source separation
         (8) band-pass filters audio files
         (9) vertically stacks all audio files in one memmap file
@@ -291,6 +293,12 @@ class Stylist:
                         Synchronizer(root_directory=one_directory,
                                      input_parameter_dict=self.input_parameter_dict,
                                      message_output=self.message_output).validate_ephys_video_sync()
+
+                    # # # place the played USVs on the session timeline (playback sessions only)
+                    if self.input_parameter_dict['processing_booleans']['conduct_usv_playback_alignment']:
+                        Synchronizer(root_directory=one_directory,
+                                     input_parameter_dict=self.input_parameter_dict,
+                                     message_output=self.message_output).align_usv_playback()
 
                     # # # harmonic-percussive source separation
                     if self.input_parameter_dict['processing_booleans']['conduct_hpss']:
@@ -733,6 +741,50 @@ def ev_sync_check_cli(ctx, root_directory, **kwargs) -> None:
         root_directory=root_directory,
         input_parameter_dict=processing_settings_dict
     ).validate_ephys_video_sync()
+
+@click.command(name="align-usv-playback")
+@click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
+@click.option('--playback-directory', 'playback_files_directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=False, help='Directory holding the playback WAVs and their _spacing.txt / _usvids.txt side-cars.')
+@click.option('--ttl-device', 'ttl_device', type=click.Choice(['m', 's'], case_sensitive=False), default=None, required=False, help='USGH device recording the playback TTL.')
+@click.option('--ttl-channel', 'ttl_channel', type=int, default=None, required=False, help='USGH channel recording the playback TTL (1-based).')
+@click.pass_context
+def align_usv_playback_cli(ctx, root_directory, **kwargs) -> None:
+    """
+    Description
+    -----------
+    A command-line tool to place the played USVs of a playback session on the
+    session timeline; any session whose experimental code is not a playback
+    code (P) is skipped.
+
+    Parameters
+    ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    root_directory (str)
+        Session root directory path.
+    **kwargs (dict)
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
+
+    Returns
+    -------
+    None
+    """
+
+    provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
+
+    processing_settings_dict = modify_settings_json_for_cli(
+        ctx=ctx,
+        provided_params=provided_params,
+        settings_dict='processing_settings',
+        block='synchronize_files.Synchronizer.align_usv_playback'
+    )
+
+    _stamp_processing_version(root_directory)
+
+    Synchronizer(
+        root_directory=root_directory,
+        input_parameter_dict=processing_settings_dict
+    ).align_usv_playback()
 
 @click.command(name="hpss-audio")
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
