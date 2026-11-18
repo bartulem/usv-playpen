@@ -259,6 +259,8 @@
     "vmi_min_bouts": 10,
     "ibi_bout_alpha": 0.01,
     "ibi_bout_min_bouts": 10,
+    "playback_alpha": 0.01,
+    "playback_min_bouts": 10,
     "spatial_info_bps_threshold": 0.5
   },
   "decode_usv_bout_occupancy": {

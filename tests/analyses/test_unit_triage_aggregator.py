@@ -307,6 +307,8 @@ DEFAULT_THRESHOLDS = {
     "vmi_min_bouts": 10,
     "ibi_bout_alpha": 0.01,
     "ibi_bout_min_bouts": 10,
+    "playback_alpha": 0.01,
+    "playback_min_bouts": 10,
     "spatial_info_bps_threshold": 0.5,
 }
 
@@ -1458,3 +1460,212 @@ def test_aggregator_ibi_bout_thresholds_fall_back_to_settings_and_gate_the_label
         for key in ("ibi_bout_onset_self_excit", "ibi_bout_first_usv_self_first"):
             assert modalities[key]["n_tested"] == 1
             assert modalities[key]["n_significant"] == expected
+
+
+def _playback_payload(index: float, p_shift: float, p_wilcoxon: float = 0.5,
+                      n_bouts_modulation: int = 124) -> dict:
+    """
+    Description
+    -----------
+    Build a `triage_stats["playback"]` block in the shape `playback_triage_summary` writes:
+    the playback modulation index, its circular-shift-null and Wilcoxon p-values, the two
+    rates behind it and the counts.
+
+    Parameters
+    ----------
+    index (float)
+        Playback modulation index; its sign sets the inferred direction.
+    p_shift (float)
+        Two-sided circular-shift-null p (the one that gates the flag).
+    p_wilcoxon (float)
+        Paired Wilcoxon p (carried as a metric only).
+    n_bouts_modulation (int)
+        Bouts that entered the modulation index (the bout gate reads this).
+
+    Returns
+    -------
+    payload (dict)
+        The mock playback block.
+    """
+
+    return {"modulation_index": index, "modulation_p_two_sided": p_shift,
+            "modulation_wilcoxon_pvalue": p_wilcoxon, "fr_sound": 3.0, "fr_silence": 2.0,
+            "n_bouts": 140, "n_bouts_modulation": n_bouts_modulation, "n_usvs": 2355,
+            "n_shuffles": 1000}
+
+
+@pytest.mark.parametrize(("index", "expected_key"), [(0.2, "playback_excit"),
+                                                     (-0.3, "playback_suppress")])
+def test_flag_one_cluster_playback_direction_follows_the_index_sign(index, expected_key):
+    """
+    Description
+    -----------
+    A playback block yields exactly one record, `playback_excit` for a positive modulation
+    index and `playback_suppress` for a negative one, significant when the shift-null p is at
+    most `playback_alpha` and enough bouts entered the index; the record carries every metric
+    of the block and no role (the played USVs belong to no emitter).
+
+    Parameters
+    ----------
+    index (float)
+        The modulation index of the block.
+    expected_key (str)
+        The record key its sign must produce.
+
+    Returns
+    -------
+    None
+    """
+
+    records = flag_one_cluster({"triage_stats": {"playback": _playback_payload(index, 0.001)}},
+                               **DEFAULT_THRESHOLDS)
+    assert set(records) == {expected_key}
+    record = records[expected_key]
+    assert record["tested"] is True
+    assert record["significant"] is True
+    assert "role" not in record
+    assert record["modulation_index"] == pytest.approx(index)
+    assert record["modulation_p_two_sided"] == pytest.approx(0.001)
+    assert record["n_bouts_modulation"] == 124
+    assert record["n_shuffles"] == 1000
+
+
+@pytest.mark.parametrize(("p_shift", "p_wilcoxon", "n_bouts_modulation"),
+                         [(0.02, 1e-6, 124),   # Wilcoxon alone does not flag
+                          (0.001, 0.5, 9)])    # too few bouts in the index
+def test_flag_one_cluster_playback_tested_but_not_significant(p_shift, p_wilcoxon,
+                                                              n_bouts_modulation):
+    """
+    Description
+    -----------
+    The shift-null p alone gates the playback label: a tiny Wilcoxon p with the shift-null p
+    above `playback_alpha` stays not significant, and so does a tiny shift-null p over fewer
+    than `playback_min_bouts` bouts. Both are still tested.
+
+    Parameters
+    ----------
+    p_shift (float)
+        Shift-null p of the block.
+    p_wilcoxon (float)
+        Wilcoxon p of the block.
+    n_bouts_modulation (int)
+        Bouts that entered the index.
+
+    Returns
+    -------
+    None
+    """
+
+    payload = _playback_payload(0.4, p_shift, p_wilcoxon, n_bouts_modulation)
+    records = flag_one_cluster({"triage_stats": {"playback": payload}}, **DEFAULT_THRESHOLDS)
+    assert records["playback_excit"]["tested"] is True
+    assert records["playback_excit"]["significant"] is False
+
+
+def test_flag_one_cluster_playback_skips_a_non_finite_index():
+    """
+    Description
+    -----------
+    A unit silent in every bout and baseline has a NaN modulation index, which has no
+    direction: the playback block then yields no record at all.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    records = flag_one_cluster({"triage_stats": {"playback": _playback_payload(float("nan"), 1.0)}},
+                               **DEFAULT_THRESHOLDS)
+    assert records == {}
+
+
+def test_aggregate_modality_stats_playback_keys_get_their_own_aggregate():
+    """
+    Description
+    -----------
+    Playback records carry no `peak_z`; across sessions they are summarized by the largest
+    absolute modulation index, the median index and the smallest shift-null p.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    entries = [{"modulation_index": 0.1, "modulation_p_two_sided": 0.004},
+               {"modulation_index": -0.3, "modulation_p_two_sided": 0.2}]
+    assert _aggregate_modality_stats("playback_excit", entries) == {
+        "max_abs_modulation_index": pytest.approx(0.3),
+        "median_modulation_index": pytest.approx(-0.1),
+        "min_modulation_p_two_sided": pytest.approx(0.004)}
+    assert _aggregate_modality_stats("playback_suppress", []) == {
+        "max_abs_modulation_index": None, "median_modulation_index": None,
+        "min_modulation_p_two_sided": None}
+
+
+def test_aggregator_playback_thresholds_fall_back_to_settings_and_gate_the_labels(tmp_path):
+    """
+    Description
+    -----------
+    End to end through the cross-session aggregator: with `playback_alpha` and
+    `playback_min_bouts` left as None, `thresholds_used` records the shipped settings values
+    and a unit with shift-null p = 0.03 is tested but not significant; a looser alpha (0.05)
+    records that value and flips the same unit to significant, so the keywords reach the
+    flagging.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        pytest's temporary directory.
+
+    Returns
+    -------
+    None
+    """
+
+    data_root = tmp_path / "data"
+    tuning_dir = data_root / "20251012_184746" / "ephys" / "tuning_curves"
+    tuning_dir.mkdir(parents=True)
+    unit_id = "imec0_cl0009_ch214_good"
+    _write_cluster_pkl(tuning_dir, unit_id, {"playback": _playback_payload(0.25, 0.03)})
+    catalog = tmp_path / "catalog.csv"
+    _write_catalog(catalog, [("M07", 20251012, unit_id, "PAG")])
+    session_list = tmp_path / "playback.txt"
+    session_list.write_text("20251012_184746\n")
+
+    settings_path = (pathlib.Path(__file__).resolve().parent.parent.parent / "src"
+                     / "usv_playpen" / "_parameter_settings" / "analyses_settings.json")
+    with settings_path.open() as fh:
+        shipped = json.load(fh)["detect_interesting_tuning_neurons"]
+
+    explicit = {k: v for k, v in DEFAULT_THRESHOLDS.items() if not k.startswith("playback_")}
+    outcomes = {}
+    for name, playback_kwargs in (("defaults", {"playback_alpha": None, "playback_min_bouts": None}),
+                                  ("loose", {"playback_alpha": 0.05, "playback_min_bouts": None})):
+        out_path = aggregate_units_across_conditions(
+            condition_to_session_list={"playback": session_list},
+            catalog_path=catalog,
+            out_dir=tmp_path / name,
+            data_root=data_root,
+            **explicit,
+            **playback_kwargs,
+        )
+        with out_path.open("rb") as fh:
+            outcomes[name] = pickle.load(fh)
+
+    used = outcomes["defaults"]["thresholds_used"]
+    assert used["playback_alpha"] == shipped["playback_alpha"]
+    assert used["playback_min_bouts"] == shipped["playback_min_bouts"]
+    assert outcomes["loose"]["thresholds_used"]["playback_alpha"] == 0.05
+
+    uid = f"M07_20251012_{unit_id}"
+    for name, expected in (("defaults", 0), ("loose", 1)):
+        block = outcomes[name]["units"][uid]["conditions"]["playback"]["modalities"]["playback_excit"]
+        assert block["n_tested"] == 1
+        assert block["n_significant"] == expected
+        assert block["aggregate"]["min_modulation_p_two_sided"] == pytest.approx(0.03)
