@@ -3660,6 +3660,42 @@ def test_first_vs_later_skips_single_usv_bouts_and_refuses_too_many_levels():
     plt.close(fig)
 
 
+def test_first_vs_later_without_2d_spread_draws_points_and_skips_the_density():
+    """
+    Description
+    -----------
+    A unit silent around every USV puts every bout at (0, 0), so the first-versus-later cloud
+    has a singular covariance and `gaussian_kde` raises LinAlgError. The panel must not fail:
+    it draws the bouts, the identity line and the mean diamond, leaves out the density image,
+    contours and their legend, and writes a grey note saying why.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    rng = np.random.default_rng(7)
+    usv_starts = np.sort(rng.uniform(10.0, 290.0, 90))
+    spike_times = np.array([], dtype=float)
+    cfg = {"response_window_seconds": 0.2, "response_kernel_seconds": 0.05}
+    bout_cfg = {"bout_density_grid": 30, "bout_density_levels": [0.5, 0.9],
+                "ink_color": "#1F1F1F", "dash_color": "#888888"}
+    runs = [np.arange(3 * k, 3 * k + 3) for k in range(30)]
+    fig, ax = plt.subplots()
+    NeuronalTuningFigureMaker._draw_first_vs_later(ax, spike_times, usv_starts, runs, cfg,
+                                                   "#9AC0CD", bout_cfg)
+    assert [t.get_text() for t in ax.texts] == ["no density: the bouts have no 2D spread"]
+    assert ax.texts[0].get_color() == "#888888"
+    assert not ax.images
+    assert ax.get_legend() is None
+    assert len(ax.collections) == 2
+    assert "30 bouts" in ax.get_title(loc="left")
+    plt.close(fig)
+
+
 def test_bout_raster_without_spikes_draws_bouts_over_the_configured_window(tmp_path):
     """
     Description

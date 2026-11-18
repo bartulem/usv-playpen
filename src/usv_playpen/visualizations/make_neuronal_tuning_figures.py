@@ -6758,8 +6758,11 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             (``bout_density_levels``, at most three, in any order; sorted ascending,
             the smallest share takes the first line style, and each contour and its
             legend entry share one style), plus the ink colour of the markers, identity line
-            and contours (``ink_color``) and the grey of the too-few-bouts note
-            (``dash_color``). More than three raises ``ValueError``.
+            and contours (``ink_color``) and the grey of the too-few-bouts and no-density
+            notes (``dash_color``). More than three raises ``ValueError``. When the bouts
+            have no 2D spread (all silent, or all on one line), the density cannot be
+            estimated: the points, identity line and mean diamond are still drawn, the
+            shading, contours and their legend are left out, and a note says so.
 
         Returns
         -------
@@ -6785,27 +6788,39 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         first, later = np.asarray(first), np.asarray(later)
         limit = max(first.max(), later.max()) * 1.08 + 0.5
 
-        grid_x, grid_y = np.mgrid[0:limit:complex(0, bout_cfg["bout_density_grid"]),
-                                  0:limit:complex(0, bout_cfg["bout_density_grid"])]
-        estimate = gaussian_kde(np.vstack([later, first]))
-        density = estimate(np.vstack([grid_x.ravel(), grid_y.ravel()])).reshape(grid_x.shape)
-        density = (density - density.min()) / (density.max() - density.min() + 1e-12)
         if len(bout_cfg["bout_density_levels"]) > len(BOUT_DENSITY_STYLES):
             msg = (f"neuronal_tuning_figures.bout_density_levels holds {len(bout_cfg['bout_density_levels'])} "
                    f"levels; at most {len(BOUT_DENSITY_STYLES)} (one per line style) can be drawn.")
             raise ValueError(msg)
-        # contour levels enclosing a stated share of the bouts, read off the sorted density;
-        # ONE pairing of (share, level, style), ascending in share, drives both the contours
-        # and the legend so each contour carries its own share's style
-        flat = np.sort(density.ravel())[::-1]
-        share = np.cumsum(flat) / flat.sum()
-        contour_styles = [(float(q), float(flat[np.searchsorted(share, q)]), style)
-                          for q, style in zip(sorted(bout_cfg["bout_density_levels"]), BOUT_DENSITY_STYLES, strict=False)]
 
-        ax.imshow(density.T,
-                  cmap=LinearSegmentedColormap.from_list("density", ["#FFFFFF", colour]),
-                  origin="lower", aspect="equal", extent=(0, limit, 0, limit),
-                  interpolation="bilinear", zorder=1)
+        grid_x, grid_y = np.mgrid[0:limit:complex(0, bout_cfg["bout_density_grid"]),
+                                  0:limit:complex(0, bout_cfg["bout_density_grid"])]
+        # a cloud with no 2D spread (every bout silent on both axes, or the points on one line)
+        # has a singular covariance and no density; the bouts are still drawn, the shading and
+        # contours are left out and the panel says why
+        try:
+            estimate = gaussian_kde(np.vstack([later, first]))
+        except np.linalg.LinAlgError:
+            estimate = None
+        contour_styles = []
+        if estimate is not None:
+            density = estimate(np.vstack([grid_x.ravel(), grid_y.ravel()])).reshape(grid_x.shape)
+            density = (density - density.min()) / (density.max() - density.min() + 1e-12)
+            # contour levels enclosing a stated share of the bouts, read off the sorted density;
+            # ONE pairing of (share, level, style), ascending in share, drives both the contours
+            # and the legend so each contour carries its own share's style
+            flat = np.sort(density.ravel())[::-1]
+            share = np.cumsum(flat) / flat.sum()
+            contour_styles = [(float(q), float(flat[np.searchsorted(share, q)]), style)
+                              for q, style in zip(sorted(bout_cfg["bout_density_levels"]), BOUT_DENSITY_STYLES, strict=False)]
+
+            ax.imshow(density.T,
+                      cmap=LinearSegmentedColormap.from_list("density", ["#FFFFFF", colour]),
+                      origin="lower", aspect="equal", extent=(0, limit, 0, limit),
+                      interpolation="bilinear", zorder=1)
+        else:
+            ax.text(0.03, 0.97, "no density: the bouts have no 2D spread", transform=ax.transAxes,
+                    ha="left", va="top", fontsize=7, color=bout_cfg["dash_color"])
         ax.scatter(later, first, s=16, facecolor=colour, edgecolor=bout_cfg["ink_color"], linewidth=0.3,
                    zorder=2)
         ax.plot([0, limit], [0, limit], color=bout_cfg["ink_color"], linewidth=1.0, zorder=3)
@@ -6817,8 +6832,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                     label=f"{100 * quantile:.0f}%")
         ax.scatter([later.mean()], [first.mean()], marker="D", s=46, facecolor="#FFFFFF",
                    edgecolor=bout_cfg["ink_color"], linewidth=0.8, zorder=5)
-        ax.legend(fontsize=6, frameon=False, loc="lower right", title="bouts enclosed",
-                  title_fontsize=6)
+        if contour_styles:
+            ax.legend(fontsize=6, frameon=False, loc="lower right", title="bouts enclosed",
+                      title_fontsize=6)
         ax.set_xlim(0, limit)
         ax.set_ylim(0, limit)
         ax.set_aspect("equal")
