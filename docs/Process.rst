@@ -636,7 +636,7 @@ The processing of video data passes multiple stages:
 
     #. Video concatenation and re-encoding (runs locally <20 min)
     #. SLEAP inference (runs on cluster)
-    #. SLEAP proofreading (bottleneck step, requires extensive human curation)
+    #. SLEAP proofreading in LUC3D (bottleneck step, requires extensive human curation)
     #. SLP-H5 conversion (runs locally <1 min)
     #. SLEAP-Anipose triangulation (runs locally <40 min)
     #. Translate, rotate and scale SLEAP coordinates to metric units (runs locally <1 min)
@@ -953,7 +953,29 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
 
 SLEAP inference and proofreading
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-The SLEAP inference and proofreading steps are not implemented in the *usv-playpen* GUI. However, you can run the inference job on the cluster using the shell script mentioned above. The proofreading step is done in the SLEAP GUI, where it is crucial to correct identity switches and to **keep the same animal identities across different video views**. By current convention, that means the male mouse is always assigned identity 0, and the female mouse is always assigned identity 1.
+The SLEAP inference and proofreading steps are not implemented in the *usv-playpen* GUI. You run the inference job on the cluster using the shell script mentioned above, and proofread the predictions in `LUC3D <https://luc3d.sleap.ai/>`_ (Label Unification and Correspondence in 3D), a browser-based multi-view annotation tool. LUC3D shows every camera view of a session side by side, together with the 3D triangulation and its reprojection error, so identity switches are fixed across all views at once rather than one video at a time. It needs no installation; its documentation is at `talmolab.github.io/luc3d-docs <https://talmolab.github.io/luc3d-docs/>`_.
+
+The goal of proofreading is to correct identity switches and to **keep the same animal identities across all video views**. By current convention, the male mouse is always assigned identity 0, and the female mouse is always assigned identity 1.
+
+Before you start, mind the browser:
+
+* LUC3D officially supports Chrome and Edge, but in our hands Chrome on Linux sometimes failed to load a session; Firefox worked best and has not broken yet. Brave is another fallback. A Jupyter notebook kept alive in another tab of the same browser can also cause trouble.
+* **Do not minimize the browser while LUC3D is loading data or computing something.**
+* **The browser can crash at any point, so save your progress often** (*File → Save*).
+
+The steps are:
+
+#. **Put a calibration file in place.** LUC3D reads the camera geometry from a calibration TOML (any file name containing "calib") in the session folder, so the session's joint-date video directory (e.g., *video/20250430145035*) **must** contain one before anything else. Either option works; in both, the camera names are the camera serial numbers, which match the camera directories:
+
+   * **Calibration from usv-playpen.** Use the *<timestamp>_calibration.toml* written by *Run AP calibration*. If it is not already in the session's joint-date directory, copy it there from the calibration recording (e.g., *20250430142022_calibration.toml*, see the directory layout above).
+   * **Calibration in the browser.** Calibrate in `calibrat3 <https://talmolab.github.io/calibrat3/>`_, the companion calibration app (in LUC3D, *Calibrate → Calibrate in New Tab*), from the ChArUco board videos alone. calibrat3 reads the Anipose-style layout our recordings already have (one directory per camera, each with its board video in *calibration_images*). In its *Board* panel, enter our board: 8 × 11 squares, square 24 mm, marker 18.75 mm, dictionary 4x4 (1000); these are the values in ``conduct_anipose_calibration`` and the session's *<timestamp>_cboard.toml*. Then download *calibration.toml* and put it in the session's joint-date directory (see `Calibrating Cameras <https://talmolab.github.io/luc3d-docs/tutorials/calibrating-cameras/>`_).#. **Load the session.** Open `LUC3D <https://luc3d.sleap.ai/>`_, choose *File → Load Single Session Folder* and select the joint-date video directory from the previous step. LUC3D loads each camera directory's video and SLEAP predictions (*.slp*) (see `Loading a Session <https://talmolab.github.io/luc3d-docs/tutorials/loading-session/>`_).
+#. **Set up triangulation and tracking.** Under *Help → Settings* (top right), set *Default triangulation* to *Bundle Adjustment (BA)*, and in the *Tracking wizard* set the weights of all tail points (*TailTip*, *Tail_2*, *Tail_1* and *Tail_0*) to 0, so the tail is not considered during tracking (this helps the tracker).
+#. **Track.** Run *Track All*. The *Number of animals* field can be left blank or filled in; neither seemed to change the result or the speed.
+#. **Fix the identities.** If the animal identities must be reversed, switch them from the first frame. Then run *Track → Propagate IDs → Tracks*, so the tracks follow the identities. Check whether the identities switch anywhere later and correct them by hand, but **save to a file first**, since the page can crash at any time. Identities (not tracks) are corrected in the *Instances* tab on the right: by default every instance sits under *Grouped Instances*, and changing its *Identity* there changes it in all views at once. To change an identity in one view only, right-click that view's track and choose *Unlink Group*; the track moves to *Ungrouped Instances*, where each view's identity can be set separately. `Tracks & Identities <https://talmolab.github.io/luc3d-docs/user-guide/tracks-identities/>`_ and `Proofreading Annotations <https://talmolab.github.io/luc3d-docs/tutorials/proofreading/>`_ explain these tools further.
+#. **Export.** *File → Export SLEAP File By Cam* writes one *<camera>.slp* per camera, with the fixed identities, into a folder you choose (see `Exporting Data <https://talmolab.github.io/luc3d-docs/user-guide/export/>`_).
+#. **Put the proofread files in place.** In each camera directory, move the original prediction *.slp* out (keep it elsewhere as a backup) and put that camera's exported file in its place under the original name (e.g., *21241563-20250430145035.slp*). Each camera directory must hold exactly one *.slp*: the SLP-H5 conversion below converts every *.slp* it finds, and SLEAP-Anipose triangulates whichever *analysis.h5* it finds first in a camera directory, so a leftover unproofread file can silently be used instead of the proofread one.
+
+From here, run the SLP-H5 conversion and the triangulation as usual.
 
 Run SLP-H5 conversion
 ~~~~~~~~~~~~~~~~~~~~~
