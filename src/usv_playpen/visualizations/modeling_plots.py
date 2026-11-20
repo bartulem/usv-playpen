@@ -65,12 +65,12 @@ from matplotlib.transforms import offset_copy
 from scipy import stats
 from scipy.interpolate import interp1d
 from scipy.ndimage import gaussian_filter1d
-from scipy.stats import gaussian_kde
+from scipy.stats import gaussian_kde, spearmanr
 from sklearn.cluster import KMeans
-from sklearn.metrics import confusion_matrix, roc_auc_score
+from sklearn.metrics import balanced_accuracy_score, confusion_matrix, roc_auc_score
 
 from ..analyses.compute_behavioral_features import FeatureZoo
-from ..modeling.manifold_metric import pairwise_distance
+from ..modeling.manifold_metric import macro_region_mean, pairwise_distance
 from ..modeling.modeling_metadata import RESERVED_METADATA_KEYS, load_selection_results
 from ..modeling.modeling_utils import manifold_tag_segment
 from ..os_utils import (
@@ -475,7 +475,7 @@ def plot_feature_ranking(
         ax.set_xticklabels([feature_pretty(str(name)) for name in feats_sorted], rotation=60, ha='right',
                            fontsize=6, color=TEXT_COLOR)
 
-        ax.set_ylabel(f'{metric_label} (held-out)', fontsize=12, color=TEXT_COLOR)
+        ax.set_ylabel(f'{metric_label} (validation data)', fontsize=12, color=TEXT_COLOR)
         ax.tick_params(axis='both', colors=TEXT_COLOR)
         ax.minorticks_off()
 
@@ -1700,7 +1700,9 @@ def _draw_selection_trajectory(ax, *, features: list, values: list, chance: floa
 
 def _draw_step_fold_scatter(ax, *, fold_values: list, colors: list, chance: float,
                             ylabel: str, tick_step: float | None = None,
-                            y_top_at_least: float | None = None) -> None:
+                            y_top_at_least: float | None = None,
+                            test_values: np.ndarray | None = None,
+                            test_pooled: float | None = None) -> None:
     """
     Draw one per-fold scatter panel of a model-selection summary.
 
@@ -1735,6 +1737,18 @@ def _draw_step_fold_scatter(ax, *, fold_values: list, colors: list, chance: floa
     y_top_at_least : float, optional
         Lowest allowed top of the y-axis; the axis still ends above the highest
         fold when that is higher.
+    test_values : np.ndarray, optional
+        Per test session, the final model's score on that session (the sessions
+        reserved before screening and selection), drawn as one open circle per
+        session on the "test" item. None draws the pooled bar alone (used when a
+        per-session score is not comparable to the steps, e.g. a manifold error
+        relative to the cohort baseline).
+    test_pooled : float, optional
+        The final model's score on all test events pooled (the number the
+        selection stored as its test-set score). When given, a "test" item is
+        drawn after the last step, past a short break in the x-axis, as a thick
+        bar at this score. No variability is drawn on it: the pooled score is
+        one number.
 
     Returns
     -------
@@ -1760,6 +1774,21 @@ def _draw_step_fold_scatter(ax, *, fold_values: list, colors: list, chance: floa
         ax.plot([x_step - 0.28, x_step + 0.28], [mean, mean], color=TEXT_COLOR, lw=2.2,
                 solid_capstyle='butt', zorder=3)
 
+    has_test = test_pooled is not None
+    n_steps = len(fold_values)
+    # The test item sits one step past a break in the x-axis.
+    x_test = n_steps + 1.6
+    if has_test:
+        test_finite = np.asarray(test_values if test_values is not None else [], dtype=float)
+        test_finite = test_finite[np.isfinite(test_finite)]
+        test_jitter = np.random.default_rng(0).uniform(-0.18, 0.18, size=test_finite.size)
+        ax.scatter(x_test + test_jitter, test_finite, s=20, facecolors='#FFFFFF',
+                   edgecolors='#000000', linewidths=0.8, zorder=2)
+        ax.plot([x_test - 0.28, x_test + 0.28], [test_pooled, test_pooled], color=TEXT_COLOR, lw=2.2,
+                solid_capstyle='butt', zorder=3)
+        all_values.extend(test_finite.tolist())
+        all_values.append(float(test_pooled))
+
     y_max = max(all_values) if all_values else chance + 1.0
     y_min = min(all_values) if all_values else chance
     if tick_step is None:
@@ -1782,14 +1811,26 @@ def _draw_step_fold_scatter(ax, *, fold_values: list, colors: list, chance: floa
                      decimals) + 0.0
     ax.set_yticks(ticks)
     ax.set_yticklabels([f"{t:.{decimals}f}" for t in ticks], fontsize=8, color=TEXT_COLOR)
-    n_steps = len(fold_values)
-    ax.set_xticks(list(range(1, n_steps + 1)))
-    ax.set_xticklabels([str(k) for k in range(1, n_steps + 1)], fontsize=8, color=TEXT_COLOR)
-    ax.set_xlim(0.4, n_steps + 0.6)
-    # A fixed offset in points keeps it level with the trajectory's x-label.
-    ax.annotate(_SELECTION_STEP_LABEL, xy=(0.5, 0.0), xycoords='axes fraction',
-                xytext=(0.0, -17.0), textcoords='offset points',
-                ha='center', va='top', fontsize=9, color=TEXT_COLOR)
+    if has_test:
+        ax.set_xticks([*range(1, n_steps + 1), x_test])
+        ax.set_xticklabels([*(str(k) for k in range(1, n_steps + 1)), 'test'], fontsize=8, color=TEXT_COLOR)
+        ax.set_xlim(0.4, x_test + 0.6)
+    else:
+        ax.set_xticks(list(range(1, n_steps + 1)))
+        ax.set_xticklabels([str(k) for k in range(1, n_steps + 1)], fontsize=8, color=TEXT_COLOR)
+        ax.set_xlim(0.4, n_steps + 0.6)
+    # A fixed offset in points keeps it level with the trajectory's x-label. With a
+    # test item the label names only the steps, so it is centred under them (x in
+    # data units, y in axes units).
+    if has_test:
+        ax.annotate(_SELECTION_STEP_LABEL, xy=((1 + n_steps) / 2.0, 0.0),
+                    xycoords=mtransforms.blended_transform_factory(ax.transData, ax.transAxes),
+                    xytext=(0.0, -17.0), textcoords='offset points',
+                    ha='center', va='top', fontsize=9, color=TEXT_COLOR)
+    else:
+        ax.annotate(_SELECTION_STEP_LABEL, xy=(0.5, 0.0), xycoords='axes fraction',
+                    xytext=(0.0, -17.0), textcoords='offset points',
+                    ha='center', va='top', fontsize=9, color=TEXT_COLOR)
     ax.set_ylabel(ylabel, fontsize=9, color=TEXT_COLOR)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
@@ -1798,6 +1839,145 @@ def _draw_step_fold_scatter(ax, *, fold_values: list, colors: list, chance: floa
     ax.tick_params(axis='x', length=0)
     for spine in ax.spines.values():
         spine.set_edgecolor(TEXT_COLOR)
+    if has_test:
+        # A short break in the x-axis separates the validation steps from the
+        # test item: the bottom spine is redrawn as two pieces.
+        x_break = n_steps + 0.8
+        ax.spines['bottom'].set_visible(False)
+        for x_from, x_to in ((0.4, x_break - 0.08), (x_break + 0.08, x_test + 0.6)):
+            ax.plot([x_from, x_to], [y_bottom, y_bottom], color=TEXT_COLOR,
+                    lw=ax.spines['left'].get_linewidth(), clip_on=False, zorder=4,
+                    solid_capstyle='butt')
+
+
+def _test_set_secondary_scores(heldout: dict, metric: str, decision_threshold: float,
+                               min_region_events: int | None = None) -> tuple | None:
+    """
+    Description
+    -----------
+    Scores the final model on the test set (the sessions reserved before screening
+    and selection), per session and pooled, from the per-event record a selection
+    stores with its test-set result. The pooled score is recomputed from the
+    per-event predictions and checked against the score the selection stored, so a
+    figure can never show a test number the run did not produce.
+
+    Supported metrics: ``'score'`` (balanced accuracy at ``decision_threshold``)
+    and ``'auc'`` from the stored probabilities (binary targets),
+    ``'spearman_r'`` from the stored predictions (bout parameters), and
+    ``'score'`` from the stored predicted classes (multinomial categories,
+    where it is the macro recall over the classes present), and
+    ``'euclidean_mae_macro'`` / ``'pullback_geodesic_mae_macro'`` from the
+    stored per-event errors (manifold position: the region-balanced mean of the
+    torus distance or of the pullback geodesic distance, averaged over the
+    acoustic regions with at least ``min_region_events`` events). A session is
+    scored only when the metric is defined on it: both classes present for
+    balanced accuracy and AUC, at least three events with varying target and
+    prediction for Spearman, at least one region at the event floor for the
+    manifold errors.
+
+    Parameters
+    ----------
+    heldout (dict)
+        The selection's ``heldout`` record; it must carry ``y_true`` and
+        ``session_ids``, and ``actual`` must carry ``y_prob`` (binary) or
+        ``y_pred`` (bout parameters); a multinomial record carries ``y_pred``
+        (classes) and ``metrics`` instead of ``actual``.
+    metric (str)
+        The secondary metric of the summary figure.
+    decision_threshold (float)
+        The probability at or above which an event is classified positive
+        (``diagnostics.binary_decision_threshold`` in the modeling settings).
+    min_region_events (int | None)
+        The region event floor of the manifold errors (the run's
+        ``usv_manifold_min_region_events``); used only by the manifold metrics,
+        which return None without it.
+
+    Returns
+    -------
+    test_scores (tuple | None)
+        ``(per_session, pooled)``: per test session the metric (sessions where
+        it is undefined are omitted) and the metric over all test events. None
+        when the record carries no per-event predictions (runs made before they
+        were stored) or the metric is not supported.
+    """
+
+    if 'y_true' not in heldout or 'session_ids' not in heldout:
+        return None
+    y_true = np.asarray(heldout['y_true'])
+    sessions = np.asarray(heldout['session_ids'])
+    # Tolerance of the check against the stored pooled score: exact up to float
+    # rounding, except the pullback geodesic error, whose geometry comes from a
+    # float32 decoder Jacobian and reproduces to ~1e-8 relative.
+    match_atol, match_rtol = 1e-9, 0.0
+
+    if metric in ('euclidean_mae_macro', 'pullback_geodesic_mae_macro'):
+        # Manifold record: per-event errors and acoustic-region labels beside the
+        # stored metrics.
+        if 'per_event_errors' not in heldout or 'region_labels' not in heldout or min_region_events is None:
+            return None
+        actual = heldout['metrics']
+        errors = np.asarray(heldout['per_event_errors'][
+            'euclidean_dist' if metric == 'euclidean_mae_macro' else 'pullback_geodesic_dist'], dtype=float)
+        regions = np.asarray(heldout['region_labels'], dtype=float)
+        if metric == 'pullback_geodesic_mae_macro':
+            match_atol, match_rtol = 0.0, 1e-6
+
+        def _score(mask):
+            return macro_region_mean(errors[mask], regions[mask], min_region_events=min_region_events)
+
+        def _defined(mask):
+            return np.isfinite(_score(mask))
+    elif 'metrics' in heldout and 'y_pred' in heldout:
+        # Multinomial record: predicted classes beside the stored metrics; only
+        # balanced accuracy (macro recall over the classes present) is supported.
+        if metric != 'score':
+            return None
+        actual = heldout['metrics']
+        y_pred_class = np.asarray(heldout['y_pred'])
+
+        def _score(mask):
+            return balanced_accuracy_score(y_true[mask], y_pred_class[mask])
+
+        def _defined(mask):
+            return np.unique(y_true[mask]).size >= 2
+    elif 'actual' not in heldout:
+        return None
+    elif metric in ('score', 'auc'):
+        actual = heldout['actual']
+        if 'y_prob' not in actual or actual['y_prob'] is None:
+            return None
+        y_prob = np.asarray(actual['y_prob'], dtype=float)
+        y_hat = (y_prob >= decision_threshold).astype(int)
+
+        def _score(mask):
+            if metric == 'score':
+                return balanced_accuracy_score(y_true[mask], y_hat[mask])
+            return roc_auc_score(y_true[mask], y_prob[mask])
+
+        def _defined(mask):
+            return np.unique(y_true[mask]).size == 2
+    elif metric == 'spearman_r':
+        actual = heldout['actual']
+        if 'y_pred' not in actual or actual['y_pred'] is None:
+            return None
+        y_pred = np.asarray(actual['y_pred'], dtype=float)
+
+        def _score(mask):
+            return float(spearmanr(y_true[mask], y_pred[mask]).statistic)
+
+        def _defined(mask):
+            return mask.sum() >= 3 and np.unique(y_true[mask]).size > 1 and np.unique(y_pred[mask]).size > 1
+    else:
+        return None
+
+    all_events = np.ones(y_true.shape[0], dtype=bool)
+    pooled = float(_score(all_events))
+    if metric in actual and np.isfinite(actual[metric]) and not np.isclose(pooled, actual[metric], rtol=match_rtol, atol=match_atol):
+        mismatch_message = (f"Test-set {metric} recomputed from the per-event record ({pooled:.12f}) does not match "
+                            f"the stored score ({actual[metric]:.12f}); the decision threshold or the record is wrong.")
+        raise ValueError(mismatch_message)
+    per_session = np.array([_score(sessions == s) for s in np.unique(sessions) if _defined(sessions == s)], dtype=float)
+    return per_session, pooled
 
 
 def plot_model_selection_results(
@@ -2163,18 +2343,33 @@ def plot_model_selection_results(
         is_minimization=is_minimization,
         category_color=_category_color,
         pretty=_pretty,
-        xlabel=f"{metric_label} (held-out data)",
+        xlabel=f"{metric_label} (validation data)",
         y_limits=summary_layout['traj_y_limits'],
         rejected_feature=rejection_row['feature_name'] if rejection_row is not None else None,
         rejected_value=rejection_row['ll_mean'] if rejection_row is not None else float('nan'),
     )
+    # The final model's test-set score (sessions reserved before screening and
+    # selection), drawn as a last item after the steps when the run stored its
+    # per-event test predictions.
+    _heldout_record = next((step['heldout'] for step in reversed(selection_steps)
+                            if 'heldout' in step and step['heldout'] is not None), None)
+    _test_scores = None
+    if _heldout_record is not None:
+        _settings_path = pathlib.Path(__file__).resolve().parent.parent / '_parameter_settings' / 'modeling_settings.json'
+        with _settings_path.open('r') as _settings_file:
+            _decision_threshold = float(json.load(_settings_file)['diagnostics']['binary_decision_threshold'])
+        _test_scores = _test_set_secondary_scores(_heldout_record, metric_secondary, _decision_threshold)
+    if _test_scores is None:
+        message_output("No per-event test-set record in this run; the test item is not drawn.")
     _draw_step_fold_scatter(
         ax_bars,
         fold_values=[d['sec_scores'] for d in steps_data],
         colors=[_category_color(d['feature_name']) for d in steps_data],
         chance=chance_secondary,
-        ylabel=f"{secondary_label} (held-out data)",
+        ylabel=(secondary_label if _test_scores is not None else f"{secondary_label} (validation data)"),
         tick_step=0.05,
+        test_values=(_test_scores[0] if _test_scores is not None else None),
+        test_pooled=(_test_scores[1] if _test_scores is not None else None),
     )
     _finish_selection_summary_layout(fig_traj, ax_traj, summary_layout)
 
@@ -2253,6 +2448,16 @@ def plot_model_selection_results(
         filter_anchor_label = 'squeak onset' if 'squeak' in _target_classes else 'USV onset'
     else:
         filter_anchor_label = 'bout onset'
+    # The filter's unit follows the engine that fitted it: the pyGAM tensor-product
+    # model stores probability partial dependences, while the linear engines (the
+    # JAX two-class model and the basis-projected logistic regression) store their
+    # log-odds weights on the frame axis. A run that records no engine predates the
+    # engine knob and was fitted with pyGAM.
+    _grid_run_md = (selection_metadata['_run_metadata']
+                    if selection_metadata is not None and '_run_metadata' in selection_metadata else {})
+    _grid_knobs = _grid_run_md['extra_knobs'] if 'extra_knobs' in _grid_run_md else {}
+    _grid_engine = _grid_knobs['model_engine'] if 'model_engine' in _grid_knobs else 'pygam'
+    filter_ylabel = "Partial dependence (ΔP)" if _grid_engine == 'pygam' else "Filter weight (log-odds)"
 
     fig_grid, axes_grid = plt.subplots(
         nrows=nrows, ncols=ncols,
@@ -2330,7 +2535,7 @@ def plot_model_selection_results(
                 ax.set_xticks(tick_values)
                 ax.set_xticklabels([f"{t:g}" for t in np.round(tick_values, 2)], fontsize=7, color=TEXT_COLOR)
                 ax.set_xlabel(f"Time relative to {filter_anchor_label} (s)", fontsize=8, color=TEXT_COLOR)
-                ax.set_ylabel("Partial dependence (ΔP)", fontsize=8, color=TEXT_COLOR)
+                ax.set_ylabel(filter_ylabel, fontsize=8, color=TEXT_COLOR)
 
                 # Draw the zero reference only when the filter's own value range spans
                 # 0. An axhline autoscales the axis to include it, so forcing 0 in
@@ -2583,7 +2788,7 @@ def plot_univariate_multinomial_performance(
 
         ax.set_xticks(range(len(current_order)))
         ax.set_xticklabels([s['name'] for s in current_order], rotation=45, ha='right', fontsize=8, color=TEXT_COLOR)
-        ax.set_ylabel(f"{label} (Held-out data)", color=TEXT_COLOR)
+        ax.set_ylabel(f"{label} (validation data)", color=TEXT_COLOR)
         ax.tick_params(axis='both', colors=TEXT_COLOR)
 
         for spine in ax.spines.values():
@@ -2658,7 +2863,7 @@ def plot_univariate_multinomial_performance(
             ax = axes_trio[j]
 
             if j == 2:
-                # NaN-aware: a class absent from the pooled held-out set produces an
+                # NaN-aware: a class absent from the pooled validation set produces an
                 # all-NaN row under normalize='true', so plain np.max would make v_limit
                 # NaN and degenerate the colour scaling. Fall back to a unit scale if no
                 # finite spread remains.
@@ -2975,13 +3180,13 @@ def plot_multinomial_selection_trajectory(
         trajectory.
     primary_metric_name : str, default ``'Area Under the ROC Curve'``
         Display name for ``metric_primary``; used as the left-panel
-        x-axis label (with `` (held-out data)`` appended).
+        x-axis label (with `` (validation data)`` appended).
     metric_secondary : str, default ``'score'``
         Key for the secondary per-fold metric. Used for the right-
         panel bars.
     secondary_metric_name : str, default ``'Balanced Accuracy'``
         Display name for ``metric_secondary``; used as the right-
-        panel y-axis label (with `` (held-out data)`` appended).
+        panel y-axis label (with `` (validation data)`` appended).
     save_plot : bool, default False
         Whether to save the figure to disk.
     output_dir : str, optional
@@ -3197,19 +3402,29 @@ def plot_multinomial_selection_trajectory(
         is_minimization=is_minimization,
         category_color=_category_color,
         pretty=_pretty,
-        xlabel=f"{primary_metric_name} (held-out data)",
+        xlabel=f"{primary_metric_name} (validation data)",
         y_limits=summary_layout['traj_y_limits'],
         rejected_feature=rejection_row['feature_name'] if rejection_row is not None else None,
         rejected_value=rejection_row['prim_mean'] if rejection_row is not None else float('nan'),
     )
+    # The final model's test-set score, drawn as a last item after the steps
+    # when the run stores its per-event test predictions with their sessions.
+    _heldout_record = next((step['heldout'] for step in reversed(selection_steps)
+                            if 'heldout' in step and step['heldout'] is not None), None)
+    _test_scores = (_test_set_secondary_scores(_heldout_record, metric_secondary, 0.5)
+                    if _heldout_record is not None else None)
+    if _test_scores is None:
+        message_output("No per-event test-set record for this metric; the test item is not drawn.")
     _draw_step_fold_scatter(
         ax_bars,
         fold_values=[d['sec_vals'] for d in steps_data],
         colors=[_category_color(d['feature_name']) for d in steps_data],
         chance=chance_secondary,
-        ylabel=f"{secondary_metric_name} (held-out data)",
+        ylabel=(secondary_metric_name if _test_scores is not None else f"{secondary_metric_name} (validation data)"),
         tick_step=0.05 if (metric_secondary in rate_metrics or metric_secondary == 'auc') else None,
         y_top_at_least=secondary_ylim_max,
+        test_values=(_test_scores[0] if _test_scores is not None else None),
+        test_pooled=(_test_scores[1] if _test_scores is not None else None),
     )
     _finish_selection_summary_layout(fig_traj, ax_traj, summary_layout)
 
@@ -3237,7 +3452,7 @@ def _final_null_filter_weights(selection_steps: list, features: list, layout: st
     -----------
     The no-signal band of a selection's final filters: the filters of the final
     feature set refit with the target permuted across the development set, stored by the
-    torus and multinomial selections with the held-out block
+    torus and multinomial selections with the test-set block
     (``heldout['null_weights']``, ``model_params.filter_null_permutations`` refits),
     reordered to ``features``.
 
@@ -3258,7 +3473,7 @@ def _final_null_filter_weights(selection_steps: list, features: list, layout: st
     -------
     null_weights (np.ndarray | None)
         The reordered permuted filters, or ``None`` when the artifact stores none
-        (held-out reserve disabled, ``filter_null_permutations = 0``, an artifact
+        (test-set reserve disabled, ``filter_null_permutations = 0``, an artifact
         that predates the band, or a feature set that does not match).
     """
     heldout = next((step['heldout'] for step in reversed(selection_steps)
@@ -3857,7 +4072,7 @@ def plot_multinomial_selection_diagnosis(
     return fig_auc, fig_rec
 
 
-# Display names (base names: the panels append " (held-out data)" /
+# Display names (base names: the panels append " (validation data)" /
 # " improvement (%)") for the selection scores the trajectory plotter
 # reads from the artifact by default.
 _MANIFOLD_METRIC_LABELS = {
@@ -3960,7 +4175,7 @@ def plot_manifold_selection_trajectory(
         falling back to a metric the run did not select on.
     primary_metric_name : str, optional
         Display name (base name) for ``metric_primary``; used as the
-        left-panel x-axis label (with `` (held-out data)`` appended).
+        left-panel x-axis label (with `` (validation data)`` appended).
         ``None`` (default) uses the label in ``_MANIFOLD_METRIC_LABELS``
         for the resolved key (``'von Mises log-score'`` for
         ``vm_logscore``), or the key itself when it has no entry there.
@@ -3971,7 +4186,7 @@ def plot_manifold_selection_trajectory(
         geometry instead (see ``metrics_secondary``).
     secondary_metric_name : str, optional
         Display name (base name) for ``metric_secondary``; used as the
-        right-panel y-axis label (with `` (held-out data)`` appended).
+        right-panel y-axis label (with `` (validation data)`` appended).
         ``None`` (default) uses the metric key.
     metrics_secondary : list of (str, str), optional
         List of ``(metric_key, display_name)`` pairs; each renders one gain
@@ -4243,10 +4458,12 @@ def plot_manifold_selection_trajectory(
 
     # Summary figure: the step trajectory (left) and one per-fold scatter per
     # secondary metric (right); see the shared helpers. A secondary panel plots
-    # each fold's improvement over the step-0 baseline (chance), oriented so
-    # positive is better: lower-is-better error metrics are flipped. With
-    # `secondary_as_pct_of_chance` the improvement is in percent of the baseline,
-    # ((chance - value) / chance for an error metric), dimensionless and
+    # each fold's improvement over its own step-0 baseline (the gate baseline
+    # scored on the same fold; the test item likewise uses the baseline scored
+    # on the test sessions), oriented so positive is better: lower-is-better
+    # error metrics are flipped. With `secondary_as_pct_of_chance` the
+    # improvement is in percent of the baseline,
+    # ((baseline - value) / baseline for an error metric), dimensionless and
     # comparable across metrics on very different scales (e.g. euclidean MAE
     # ~0.35 vs pullback geodesic ~38).
     fig_traj, ax_traj, sec_axes, summary_layout = _selection_summary_figure(
@@ -4260,11 +4477,22 @@ def plot_manifold_selection_trajectory(
         is_minimization=is_minimization_primary,
         category_color=_category_color,
         pretty=_pretty,
-        xlabel=f"{primary_metric_name} (held-out data)",
+        xlabel=f"{primary_metric_name} (validation data)",
         y_limits=summary_layout['traj_y_limits'],
         rejected_feature=rejection_row['feature_name'] if rejection_row is not None else None,
         rejected_value=rejection_row['prim_mean'] if rejection_row is not None else float('nan'),
     )
+    # The final model's test-set error, drawn as a last item after the steps
+    # when the run stores its per-event test errors with their sessions and
+    # acoustic regions; it is expressed against the test set's own
+    # intercept-only baseline when the record stores one, and otherwise (pooled
+    # bar only) against the validation step-0 baseline.
+    _heldout_record = next((step['heldout'] for step in reversed(selection_steps)
+                            if 'heldout' in step and step['heldout'] is not None), None)
+    # The run's own region event floor; read only when the record carries the
+    # per-event errors (older artifacts may not record the knob).
+    _min_region_events = (int(selection_metadata['_run_metadata']['extra_knobs']['usv_manifold_min_region_events'])
+                          if _heldout_record is not None and 'per_event_errors' in _heldout_record else None)
     for _ax_sec, (_sec_key, _sec_name) in zip(sec_axes, metrics_secondary, strict=True):
         _is_min = _sec_key in lower_is_better_set
         _ch = _chance_value(_sec_key, _is_min)
@@ -4273,18 +4501,73 @@ def plot_manifold_selection_trajectory(
         _direction = -1.0 if _is_min else 1.0
         _use_pct = bool(secondary_as_pct_of_chance) and abs(_ch) > 1e-12
         _scale = (100.0 / _ch) if _use_pct else 1.0
+        # Each fold's improvement over its OWN step-0 baseline (the gate baseline,
+        # listed first in the step-0 block, scored on the same validation
+        # partition), so a fold's value measures the model and not how hard that
+        # partition's sessions are to predict. Pairing needs the step to use the
+        # step-0 folds (identical test indices); otherwise the fold is compared
+        # with the across-fold step-0 mean.
+        _base_folds = None
+        if selection_steps and selection_steps[0]['candidates_summary']:
+            _base_folds = next(iter(selection_steps[0]['candidates_summary'].values()))['folds']
         _fold_gains = []
         for s in accepted_steps:
-            _fm = s['candidates_summary'][s['selected_feature']]['folds']['metrics']
+            _folds = s['candidates_summary'][s['selected_feature']]['folds']
+            _fm = _folds['metrics']
             _vals = np.array((_fm[_sec_key] if _sec_key in _fm else []), dtype=float)
-            _fold_gains.append(_direction * (_vals - _ch) * _scale)
+            _paired = (_base_folds is not None and _sec_key in _base_folds['metrics']
+                       and 'test_indices' in _folds and 'test_indices' in _base_folds
+                       and len(_folds['test_indices']) == len(_base_folds['test_indices']) == _vals.size
+                       and all(np.array_equal(_a, _b) for _a, _b in zip(_folds['test_indices'],
+                                                                         _base_folds['test_indices'], strict=True)))
+            if _paired:
+                _base_vals = np.array(_base_folds['metrics'][_sec_key], dtype=float)
+                _fold_gains.append(_direction * (_vals - _base_vals)
+                                   * (100.0 / _base_vals if _use_pct else 1.0))
+            else:
+                message_output(f"Step '{s['selected_feature']}' does not share the step-0 folds; "
+                               f"its {_sec_key} folds are compared with the across-fold step-0 mean.")
+                _fold_gains.append(_direction * (_vals - _ch) * _scale)
+        _test_scores = (_test_set_secondary_scores(_heldout_record, _sec_key, 0.5,
+                                                   min_region_events=_min_region_events)
+                        if _heldout_record is not None else None)
+        # The test item against the test set's own baseline: the run's
+        # intercept-only prediction (the development-set circular mean) scored on
+        # the same test events, per session and pooled, so each circle is that
+        # session's improvement over its own baseline.
+        _test_gain_values, _test_gain_pooled = None, None
+        if _test_scores is not None and 'baseline' in _heldout_record:
+            _baseline_record = {
+                'y_true': _heldout_record['y_true'],
+                'session_ids': _heldout_record['session_ids'],
+                'region_labels': _heldout_record['region_labels'],
+                'per_event_errors': _heldout_record['baseline']['per_event_errors'],
+                'metrics': {},
+            }
+            _base_scores = _test_set_secondary_scores(_baseline_record, _sec_key, 0.5,
+                                                      min_region_events=_min_region_events)
+            _test_gain_values = (_direction * (_test_scores[0] - _base_scores[0])
+                                 * (100.0 / _base_scores[0] if _use_pct else 1.0))
+            _test_gain_pooled = (_direction * (_test_scores[1] - _base_scores[1])
+                                 * (100.0 / _base_scores[1] if _use_pct else 1.0))
+        elif _test_scores is not None:
+            # No stored test baseline: the pooled bar alone, against the
+            # validation step-0 baseline (a per-session error against that
+            # cohort baseline mixes the model's gain with how hard each
+            # session's repertoire is to predict).
+            _test_gain_pooled = _direction * (_test_scores[1] - _ch) * _scale
+        else:
+            message_output(f"No per-event test-set record for {_sec_key}; the test item is not drawn.")
         _draw_step_fold_scatter(
             _ax_sec,
             fold_values=_fold_gains,
             colors=[_category_color(d['feature_name']) for d in steps_data],
             chance=0.0,
             ylabel=(f"{_sec_name} improvement (%)" if _use_pct
-                    else f"Δ {_sec_name} vs baseline (held-out)"),
+                    else (f"Δ {_sec_name} vs baseline" if _test_scores is not None
+                          else f"Δ {_sec_name} vs baseline (validation data)")),
+            test_values=_test_gain_values,
+            test_pooled=_test_gain_pooled,
         )
     _finish_selection_summary_layout(fig_traj, ax_traj, summary_layout)
 
