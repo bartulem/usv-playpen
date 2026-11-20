@@ -2645,6 +2645,8 @@ def vocal_onset_model_selection(univariate_results_path: str,
     # greedy acceptance, or the per-fold balancing. Skipped when holdout is
     # disabled (`held_sessions` empty), no feature was accepted, or the pooled
     # data is degenerate -- leaving `heldout` None so no-holdout runs match before.
+    # The per-event probabilities, true labels and session ids are stored beside
+    # the scores, so each held-out session can be scored separately without a refit.
     heldout_result = None
     if held_sessions and len(current_model_features) > 0:
         p_dev_by_feat, n_dev_by_feat, test_by_feat = [], [], []
@@ -2653,7 +2655,9 @@ def vocal_onset_model_selection(univariate_results_path: str,
             p_dev, n_dev, g_p_dev_f, g_n_dev_f = pool_session_arrays(all_feature_data[f_name], dev_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=history_frames, return_groups=True)
             if not p_dev_by_feat:
                 g_p_dev, g_n_dev = g_p_dev_f, g_n_dev_f
-            p_held, n_held = pool_session_arrays(all_feature_data[f_name], held_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=history_frames)
+            p_held, n_held, g_p_held_f, g_n_held_f = pool_session_arrays(all_feature_data[f_name], held_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=history_frames, return_groups=True)
+            if not test_by_feat:
+                g_p_held, g_n_held = g_p_held_f, g_n_held_f
             p_dev_by_feat.append(p_dev)
             n_dev_by_feat.append(n_dev)
             test_by_feat.append(np.concatenate((p_held, n_held)))
@@ -2671,6 +2675,11 @@ def vocal_onset_model_selection(univariate_results_path: str,
                 gam_terms_final += te(i * 2, i * 2 + 1, n_splines=[n_splines_value, n_splines_time])
             y_held_test = np.concatenate((np.ones(n_p_held), np.zeros(n_n_held)))
             y_te_int = y_held_test.astype(int)
+            # Per-event record of the held-out block (true label and session of
+            # every event, in scoring order), so each held-out session can be
+            # scored separately later without refitting.
+            heldout_result['y_true'] = y_te_int
+            heldout_result['session_ids'] = np.concatenate((g_p_held, g_n_held)).astype(str)
             X_te_gam = get_unrolled_X_for_multivariate(test_by_feat, history_frames)
             # Distinct-but-deterministic seed for the balanced development draw and
             # the null permutation; offset the fold seeds by `n_splits_selection`.
@@ -2689,7 +2698,7 @@ def vocal_onset_model_selection(univariate_results_path: str,
                 y_tr_use = (y_tr_bal if branch == 'actual'
                             else y_tr_bal[null_target_permutation(y_tr_bal.shape[0], held_rng)])
                 rec = {'ll': np.nan, 'auc': np.nan, 'score': np.nan,
-                       'deviance_explained': np.nan, 'brier': np.nan,
+                       'deviance_explained': np.nan, 'brier': np.nan, 'y_prob': None,
                        'heldout_fit_failed': False, 'heldout_fit_error': None}
                 try:
                     if model_type == 'sklearn':
@@ -2710,6 +2719,7 @@ def vocal_onset_model_selection(univariate_results_path: str,
                         y_proba_tiled = gam.predict_proba(X_te_gam)
                         y_proba_mean = np.mean(y_proba_tiled.reshape(len(y_held_test), history_frames), axis=1)
                     y_pred_mean = (y_proba_mean >= settings['diagnostics']['binary_decision_threshold']).astype(int)
+                    rec['y_prob'] = np.asarray(y_proba_mean, dtype=np.float32)
                     rec['ll'] = log_loss(y_te_int, np.clip(y_proba_mean, 1e-15, 1 - 1e-15))
                     rec['deviance_explained'] = 1.0 - rec['ll'] / np.log(2)
                     rec['score'] = balanced_accuracy_score(y_te_int, y_pred_mean)
@@ -4027,6 +4037,8 @@ def vocal_category_model_selection(
     # balancing. Skipped when holdout is disabled (`held_sessions_arr` empty),
     # no feature was accepted, or the pooled data is degenerate -- leaving
     # `heldout` None so no-holdout runs are byte-identical to before.
+    # The per-event probabilities, true labels and session ids are stored beside
+    # the scores, so each held-out session can be scored separately without a refit.
     heldout_result = None
     if held_sessions_arr.size > 0 and len(current_model_features) > 0:
         dev_t_raw, dev_o_raw = _pool_category_features(
@@ -4055,13 +4067,19 @@ def vocal_category_model_selection(
             X_te_list = [np.concatenate([t, o], axis=0) for t, o in zip(held_t_raw, held_o_raw, strict=False)]
             y_test_held = np.concatenate([np.ones(n_held_targ), np.zeros(n_held_other)])
             y_te_int = y_test_held.astype(int)
+            # Per-event record of the held-out block (true label and session of
+            # every event, in scoring order), so each held-out session can be
+            # scored separately later without refitting.
+            held_g_t, held_g_o = _category_row_sessions(all_feature_data, current_model_features[0], held_sessions_arr)
+            heldout_result['y_true'] = y_te_int
+            heldout_result['session_ids'] = np.concatenate([held_g_t, held_g_o]).astype(str)
             held_rng = np.random.default_rng(held_seed)
             for branch in ('actual', 'null'):
                 # The held-out null shuffles labels across the development set.
                 y_tr = (y_tr_bal if branch == 'actual'
                         else y_tr_bal[null_target_permutation(y_tr_bal.shape[0], held_rng)])
                 rec = {'ll': np.nan, 'auc': np.nan, 'score': np.nan,
-                       'deviance_explained': np.nan, 'brier': np.nan,
+                       'deviance_explained': np.nan, 'brier': np.nan, 'y_prob': None,
                        'heldout_fit_failed': False, 'heldout_fit_error': None}
                 try:
                     if model_type == 'sklearn':
@@ -4095,6 +4113,7 @@ def vocal_category_model_selection(
                         y_prob_frame = gam.predict_proba(X_gam_te)
                         y_prob = np.mean(y_prob_frame.reshape(len(y_test_held), history_frames), axis=1)
                         y_pred = (y_prob >= settings['diagnostics']['binary_decision_threshold']).astype(int)
+                    rec['y_prob'] = np.asarray(y_prob, dtype=np.float32)
                     y_prob_clipped = np.clip(y_prob, 1e-15, 1 - 1e-15)
                     rec['ll'] = log_loss(y_te_int, y_prob_clipped)
                     rec['deviance_explained'] = 1.0 - rec['ll'] / np.log(2)
@@ -5208,6 +5227,8 @@ def bout_parameter_model_selection(
     # acceptance, or inner-CV alpha selection. Skipped when holdout is disabled
     # (`_held_positions` empty) or no feature was accepted, leaving `heldout`
     # None so no-holdout runs are byte-identical to before.
+    # The per-event predictions, true targets and session ids are stored beside
+    # the scores, so each held-out session can be scored separately without a refit.
     heldout_result = None
     if _held_positions.size > 0 and len(current_model_features) > 0:
         y_dev = y_global[_dev_positions]
@@ -5221,12 +5242,18 @@ def bout_parameter_model_selection(
             'features': list(current_model_features),
             'n_held_out_sessions': len(np.unique(groups_global[_held_positions])),
             'n_held_out_events': int(_held_positions.size),
+            # Per-event record of the held-out block (true target and session of
+            # every event, in scoring order), so each held-out session can be
+            # scored separately later without refitting.
+            'y_true': y_held,
+            'session_ids': np.asarray(groups_global[_held_positions]).astype(str),
+            'test_indices': _held_positions,
         }
         for branch in ('actual', 'null'):
             # The held-out null shuffles targets across the development set.
             y_dev_use = (y_dev if branch == 'actual'
                          else y_dev[null_target_permutation(y_dev.shape[0], held_rng)])
-            rec = {'explained_deviance': np.nan, 'residual_deviance': np.nan,
+            rec = {'explained_deviance': np.nan, 'residual_deviance': np.nan, 'y_pred': None,
                    'heldout_fit_failed': False, 'heldout_fit_error': None}
             try:
                 if model_type == 'sklearn':
@@ -5267,6 +5294,7 @@ def bout_parameter_model_selection(
                     eta_held = np.log(held_gam.predict_mu(X_held_gam)).reshape(len(y_held), history_frames)
                     y_pred = np.exp(np.mean(eta_held, axis=1))
 
+                rec['y_pred'] = np.asarray(y_pred, dtype=np.float32)
                 y_held_safe = np.maximum(y_held, 1e-6)
                 y_pred_safe = np.maximum(y_pred, 1e-6)
                 y_null_pred = np.full_like(y_held_safe, np.mean(y_held_safe))
@@ -6992,6 +7020,7 @@ def multinomial_vocal_category_model_selection(
             'y_pred': y_pred,
             'y_probs': y_proba,
             'test_indices': _held_positions,
+            'session_ids': np.asarray(groups_global[_held_positions]).astype(str),
             'p_train': _class_proportions(p_train_labels),
             'p_test': _class_proportions(y_held),
             'confusion_matrix': safe_confusion_matrix(y_held, y_pred, labels=canonical_classes),
@@ -9101,6 +9130,9 @@ def continuous_vocal_manifold_model_selection(
                 'basis_coefficients': (np.asarray(held_model.coef_) if temporal_basis is not None else None),
                 'intercept': held_model.intercept_,
                 'test_indices': _held_positions,
+                'session_ids': np.asarray(groups_global[_held_positions]).astype(str),
+                'region_labels': region_held,
+                'kappa': kappa_frozen,
                 'y_true': Y_held,
                 'w_test': w_held,
                 'y_pred_xy': held_pred_xy,
@@ -9182,6 +9214,9 @@ def continuous_vocal_manifold_model_selection(
                 'y_true': Y_held,
                 'w_test': w_held,
                 'test_indices': _held_positions,
+                'session_ids': np.asarray(groups_global[_held_positions]).astype(str),
+                'region_labels': region_held,
+                'kappa': kappa_frozen,
                 'n_held_out_sessions': len(_held_out_session_ids),
                 'n_held_out_events': int(_held_positions.size),
             }
