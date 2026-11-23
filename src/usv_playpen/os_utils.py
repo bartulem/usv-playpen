@@ -427,8 +427,17 @@ def rebase_experimenter_in_paths(obj: object = None,
 # consolidate-spectrogram-store; ``resolve_consolidated_h5_path`` picks the newest),
 # and the QLVM package root and the category bundle are its sub-folders. Figure
 # code that shows real vocalizations at their map positions reads the store from
-# here, never from a settings path the experimenter re-keying rewrites.
-SPECTROGRAMS_DIRECTORY = "/mnt/falkner/Bartul/spectrograms"
+# here, never from a settings path the experimenter re-keying rewrites. A machine
+# that cannot see the lab share (a cluster such as Della, where the folder is copied
+# to scratch) points it elsewhere through the USV_PLAYPEN_SPECTROGRAMS_DIRECTORY
+# environment variable, read once at import; an unset or blank variable keeps the
+# lab path. The cluster templates export it next to EXPERIMENTER_ID.
+SPECTROGRAMS_DIRECTORY = (
+    os.environ["USV_PLAYPEN_SPECTROGRAMS_DIRECTORY"].strip().rstrip("/")
+    if "USV_PLAYPEN_SPECTROGRAMS_DIRECTORY" in os.environ
+    and os.environ["USV_PLAYPEN_SPECTROGRAMS_DIRECTORY"].strip()
+    else "/mnt/falkner/Bartul/spectrograms"
+)
 QLVM_MODEL_PACKAGE_ROOT = f"{SPECTROGRAMS_DIRECTORY}/qlvm"
 
 # The production embedding: column prefix -> cell under the folder above (the

@@ -31,10 +31,16 @@ artifact whose layout is:
 Two safety properties are enforced:
 
 1.  **Metadata equality**: every per-feature pickle's `_input_metadata`
-    and `_run_metadata` blocks must be structurally equal (modulo
-    explicitly ignored fields like per-file `git_dirty` / package
-    version). Stray files from a different run cause the consolidator
-    to abort with a precise diff.
+    block must be structurally equal (modulo explicitly ignored fields
+    like per-file `git_dirty` / package version). Stray files from a
+    different extraction cause the consolidator to abort with a precise
+    diff. A differing `_run_metadata` block does not abort: an array task
+    re-run under a newer package version records new settings keys or a
+    new settings-file hash even when nothing that affects its fits
+    changed, so the consolidator prints a warning naming every
+    difference, records it in
+    `_consolidation_metadata['run_metadata_mismatches']`, and hoists the
+    first metadata-bearing file's block.
 2.  **Reserved-key isolation**: the per-feature dict must contain
     exactly one feature key (the dispatcher writes it that way). A
     file that contains zero or more than one feature key triggers an
@@ -298,8 +304,8 @@ def consolidate(input_dir: str,
     FileNotFoundError
         If `input_dir` is empty or does not exist.
     ValueError
-        If any per-feature file disagrees on a non-ignored metadata
-        key, contains zero or more than one feature, or — when
+        If any per-feature file disagrees on a non-ignored
+        `_input_metadata` key, contains zero or more than one feature, or — when
         `allow_legacy` is False — lacks the metadata blocks; or if the
         merged set is incomplete: the feature indices parsed from the
         filenames skip a value, or (when the per-feature `_run_metadata`
@@ -334,6 +340,7 @@ def consolidate(input_dir: str,
 
     successfully_merged_paths = []
     successfully_merged_timestamps = []
+    run_metadata_mismatches = []
 
     for fp in pkl_files:
         with Path(fp).open('rb') as fh:
@@ -389,11 +396,15 @@ def consolidate(input_dir: str,
                     )
                 if not metadata_blocks_equal(canonical_run_md, cur_run,
                                              ignore_keys=ignore_provenance_keys):
+                    # A task re-run under a newer package version changes the
+                    # recorded settings without necessarily changing the fits,
+                    # so this is reported, not refused.
                     diffs = _diff_metadata(canonical_run_md, cur_run,
                                            ignore_keys=ignore_provenance_keys)
-                    raise ValueError(
-                        f"`_run_metadata` mismatch between {canonical_md_path.name} "
-                        f"and {fp.name}:\n  - " + "\n  - ".join(diffs)
+                    print(f"[consolidate] WARNING: `_run_metadata` of {fp.name} differs from "
+                          f"{canonical_md_path.name}'s:\n  - " + "\n  - ".join(diffs))
+                    run_metadata_mismatches.append(
+                        {'feature': feat_name, 'file': fp.name, 'differences': list(diffs)}
                     )
 
         if feat_name in consolidated:
@@ -433,6 +444,12 @@ def consolidate(input_dir: str,
         consolidator_name=CONSOLIDATOR_NAME,
         consolidator_version=CONSOLIDATOR_VERSION,
     )
+    cons_md['run_metadata_mismatches'] = run_metadata_mismatches
+    if run_metadata_mismatches:
+        print(f"[consolidate] WARNING: {len(run_metadata_mismatches)} per-feature file(s) carry a "
+              f"`_run_metadata` that differs from {canonical_md_path.name}'s; the hoisted block is "
+              "that file's, and the differences are recorded in "
+              "`_consolidation_metadata['run_metadata_mismatches']`.")
 
     consolidated['_consolidation_metadata'] = cons_md
     if canonical_input_md is not None:

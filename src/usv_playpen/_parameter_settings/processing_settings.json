@@ -10,6 +10,7 @@
     "conduct_hpss": false,
     "conduct_audio_video_sync": false,
     "conduct_ephys_video_sync": false,
+    "conduct_usv_playback_alignment": false,
     "conduct_ephys_file_chaining": false,
     "split_cluster_spikes": false,
     "prepare_sleap_cluster": false,
@@ -242,6 +243,18 @@
         "device_receiving_input": "both",
         "triggerbox_ch_receiving_input": 4,
         "subprocess_timeout_hours": 2
+      },
+      "align_usv_playback": {
+        "playback_files_directory": "/mnt/falkner/Bartul/usv_playback_experiments/old_playback/naturalistic_usv_playback_files",
+        "ttl_device": "m",
+        "ttl_channel": 3,
+        "highpass_cutoff_hz": 20000,
+        "initial_lag_search_seconds": 0.5,
+        "lag_search_seconds": 0.15,
+        "min_peak_over_median": 8.0,
+        "min_confident_bout_fraction": 0.9,
+        "envelope_smoothing_seconds": 0.0005,
+        "usv_extent_threshold_fraction": 0.1
       }
     }
   },

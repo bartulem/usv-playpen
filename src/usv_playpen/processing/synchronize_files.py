@@ -4,6 +4,7 @@ Synchronizes files:
 (1) the recorded .wav file with a tracking file (cuts them to video length).
 (2) find audio and video sync trains and check whether they match.
 (3) performs a check on the e-phys data stream to see if the video duration matches the e-phys recording.
+(4) places the USVs of a playback session's playback file on the session timeline.
 """
 
 from __future__ import annotations
@@ -21,16 +22,20 @@ from datetime import datetime
 
 import cv2
 import numpy as np
+import polars as pls
 import probeinterface
+import soundfile as sf
 from imgstore import new_for_filename
 from numba import njit
 from scipy.io import wavfile
+from scipy.signal import butter, fftconvolve, hilbert, sosfiltfilt
 from spikeinterface.extractors import read_binary
 from spikeinterface.extractors.neuropixels_utils import (
     get_neuropixels_sample_shifts_from_probe,
 )
 from spikeinterface.preprocessing import phase_shift
 
+from ..analyses.decode_experiment_label import extract_information
 from ..os_utils import (
     atomic_output_path,
     ephys_base_for_data_root,
@@ -38,6 +43,7 @@ from ..os_utils import (
     wait_for_subprocesses,
 )
 from ..time_utils import is_gui_context, smart_wait
+from ..yaml_utils import load_session_metadata, read_excluded_audio_channels
 from .load_audio_files import DataLoader
 
 
@@ -1619,3 +1625,347 @@ class Synchronizer:
 
         # create HPSS directory
         (pathlib.Path(self.root_directory) / 'audio' / 'hpss').mkdir(parents=True, exist_ok=True)
+
+    def align_usv_playback(self) -> dict | None:
+        """
+        Description
+        -----------
+        Places every USV of a playback session's playback file on the session
+        (video) timeline and writes them as a table, so later analyses read the
+        played USVs from the file that was played rather than from detections.
+
+        Runs only for playback sessions: the session's experimental code
+        (``session_experiment_code`` in the metadata YAML) must decode to the
+        'playback' experiment type (the letter P, see
+        ``decode_experiment_label.extract_information``); any other session is
+        skipped with a message and nothing is written.
+
+        The steps:
+
+          1. The played file: ``session_usv_playback_file`` in the metadata
+             (the 192 kHz WAV the playback device played) is mapped to its
+             original-rate WAV and the ``_spacing.txt`` / ``_usvids.txt``
+             side-cars in ``playback_files_directory``. The side-cars list the
+             file's chunks in order (sample counts at the original rate and a
+             label each: ``ISI`` for the silence between bouts, ``IUI`` for the
+             silence between USVs of a bout, anything else a USV clip), so every
+             clip's position in the file is exact. Their sample counts must sum
+             to the WAV's length.
+          2. The playback window: the playback device holds its TTL line low
+             while it plays, recorded in the least significant bit of
+             ``ttl_channel`` on ``ttl_device`` (cropped_to_video WAV, so sample
+             0 is the first video frame). The single falling edge is the
+             playback start; the rising edge, when present, is recorded only
+             (it trails the actual end by a few tens of ms).
+          3. The microphone: every cropped_to_video channel not listed as
+             excluded in the metadata is cross-correlated with the first bout of
+             the file (both high-passed at ``highpass_cutoff_hz``), searching
+             ``initial_lag_search_seconds`` after the TTL drop; the channel with
+             the sharpest peak (peak over median of the correlation envelope)
+             is used from here on.
+          4. The per-bout lag: each bout of the file is cross-correlated with the
+             recording around its expected time (``lag_search_seconds`` either
+             side of the running lag estimate). A bout whose peak over median
+             reaches ``min_peak_over_median`` is confident and updates the
+             running estimate.
+          5. The fit: the confident bouts' lags are fit with a straight line in
+             file time, lag(t) = delay + drift * t, which absorbs the start
+             delay of the playback device and the rate difference of its clock.
+             Fewer than ``min_confident_bout_fraction`` confident bouts raises.
+          6. The USV extents: each clip's USV onset and offset are where its
+             high-passed amplitude envelope (smoothed over
+             ``envelope_smoothing_seconds``) first and last reaches
+             ``usv_extent_threshold_fraction`` of the clip's peak, measured on
+             the noise-free file, so the padding inside each clip is excluded.
+             A file time t maps to session time
+             ttl_start + delay + t * (1 + drift).
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        alignment_summary (dict | None)
+            The alignment metadata written to the JSON side-car (TTL edges,
+            microphone, delay, drift, fit residuals, bout counts, settings), or
+            None for a session that is not a playback session.
+        played_usvs (.csv file)
+            ``audio/<session_id>_played_usvs.csv``: one row per played
+            USV with ``usv_id``, ``bout_id``, ``position_in_bout`` (1-based),
+            ``start`` / ``stop`` / ``duration`` (session seconds, the USV's own
+            extent), ``clip_start`` / ``clip_stop`` (session seconds, the whole
+            clip with its padding) and ``source_clip`` (the clip's label).
+        playback_alignment (.json file)
+            ``audio/<session_id>_playback_alignment.json``: the alignment summary.
+        """
+
+        settings = self.input_parameter_dict['align_usv_playback']
+        root = pathlib.Path(self.root_directory)
+        session_id = root.name
+
+        metadata, _ = load_session_metadata(str(root), logger=self.message_output)
+        if metadata is None:
+            msg = f"No *_metadata.yaml in {root}; the experimental code cannot be read."
+            raise FileNotFoundError(msg)
+        experiment_code = str(metadata['Session']['session_experiment_code'])
+        experiment_info = extract_information(experiment_code)
+        if experiment_info is None or 'playback' not in experiment_info['experiment_type']:
+            self.message_output(f"USV playback alignment skipped for {session_id}: experimental code {experiment_code} is not a playback session.")
+            return None
+
+        self.message_output(f"USV playback alignment started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
+
+        # 1. the played file and its side-cars
+        played_file = str(metadata['Session']['session_usv_playback_file']).strip()
+        if not played_file:
+            msg = f"{session_id} is a playback session ({experiment_code}) but its metadata names no session_usv_playback_file."
+            raise ValueError(msg)
+        playback_directory = pathlib.Path(settings['playback_files_directory'])
+        file_stem = re.sub(r'(_192kHz)?(\.wav)?$', '', pathlib.Path(played_file).name)
+        original_wav = playback_directory / f"{file_stem}.wav"
+        spacing_txt = playback_directory / f"{file_stem}_spacing.txt"
+        usvids_txt = playback_directory / f"{file_stem}_usvids.txt"
+        for required_file in (original_wav, spacing_txt, usvids_txt):
+            if not required_file.is_file():
+                msg = f"Playback file {required_file} not found (from session_usv_playback_file {played_file})."
+                raise FileNotFoundError(msg)
+        chunk_lengths = np.array([int(value) for value in spacing_txt.read_text().split()], dtype=np.int64)
+        chunk_labels = [line.strip() for line in usvids_txt.read_text().splitlines() if line.strip()]
+        if chunk_lengths.size != len(chunk_labels):
+            msg = f"{spacing_txt.name} lists {chunk_lengths.size} chunks but {usvids_txt.name} lists {len(chunk_labels)}."
+            raise ValueError(msg)
+        playback_info = sf.info(str(original_wav))
+        playback_sr = int(playback_info.samplerate)
+        if int(chunk_lengths.sum()) != int(playback_info.frames):
+            msg = f"The {spacing_txt.name} chunks sum to {int(chunk_lengths.sum())} samples but {original_wav.name} has {playback_info.frames}."
+            raise ValueError(msg)
+        chunk_starts = np.concatenate([[0], np.cumsum(chunk_lengths)[:-1]])
+
+        # USV clips and the bouts they form (runs of chunks between ISIs)
+        clip_rows = []
+        bouts = []
+        bout_id = -1
+        in_bout = False
+        for chunk_start, chunk_length, chunk_label in zip(chunk_starts, chunk_lengths, chunk_labels, strict=True):
+            if chunk_label == 'ISI':
+                in_bout = False
+                continue
+            if not in_bout:
+                bout_id += 1
+                bouts.append([int(chunk_start), int(chunk_start + chunk_length)])
+                in_bout = True
+            bouts[bout_id][1] = int(chunk_start + chunk_length)
+            if chunk_label != 'IUI':
+                clip_rows.append((bout_id, int(chunk_start), int(chunk_start + chunk_length), chunk_label))
+        if not bouts:
+            msg = f"{usvids_txt.name} holds no USV clips."
+            raise ValueError(msg)
+
+        # 2. the playback window from the TTL bit
+        cropped_directory = root / 'audio' / 'cropped_to_video'
+        ttl_wav = first_match_or_raise(
+            root=cropped_directory,
+            pattern=f"{settings['ttl_device']}_*_ch{int(settings['ttl_channel']):02d}_cropped_to_video.wav",
+            label="playback TTL cropped_to_video WAV",
+        )
+        ttl_samples, recording_sr = sf.read(str(ttl_wav), dtype='int16')
+        ttl_bit = (ttl_samples & 1).astype(np.int8)
+        del ttl_samples
+        ttl_edges = np.flatnonzero(np.diff(ttl_bit)) + 1
+        falling_edges = ttl_edges[ttl_bit[ttl_edges] == 0]
+        rising_edges = ttl_edges[ttl_bit[ttl_edges] == 1]
+        if falling_edges.size != 1:
+            msg = f"Expected one falling playback TTL edge in {ttl_wav.name}, found {falling_edges.size}."
+            raise ValueError(msg)
+        ttl_start = float(falling_edges[0]) / recording_sr
+        ttl_end = float(rising_edges[0]) / recording_sr if rising_edges.size == 1 else float('nan')
+        if recording_sr != playback_sr:
+            msg = f"The recording ({recording_sr} Hz) and the original playback file ({playback_sr} Hz) differ in sampling rate."
+            raise ValueError(msg)
+        sr = recording_sr
+
+        highpass = butter(4, float(settings['highpass_cutoff_hz']), 'hp', fs=sr, output='sos')
+        playback_reader = sf.SoundFile(str(original_wav))
+
+        def read_highpassed(reader, start_sample, stop_sample):
+            """
+            Description
+            -----------
+            Reads samples [start_sample, stop_sample) of an open WAV and
+            high-passes them.
+
+            Parameters
+            ----------
+            reader (soundfile.SoundFile)
+                Open WAV file.
+            start_sample, stop_sample (int)
+                Sample range to read.
+
+            Returns
+            -------
+            samples (np.ndarray)
+                High-passed float32 samples.
+            """
+
+            reader.seek(int(start_sample))
+            return sosfiltfilt(highpass, reader.read(int(stop_sample - start_sample), dtype='float32'))
+
+        def match_bout(reader, template, search_start, search_stop):
+            """
+            Description
+            -----------
+            Slides a high-passed bout template over a stretch of recording and
+            returns where its correlation envelope peaks.
+
+            Parameters
+            ----------
+            reader (soundfile.SoundFile)
+                Open recording WAV.
+            template (np.ndarray)
+                High-passed bout from the playback file.
+            search_start, search_stop (int)
+                Recording samples to search (must hold the template).
+
+            Returns
+            -------
+            peak_sample, peak_over_median (int, float)
+                Recording sample where the template's first sample lands at the
+                peak, and the peak's height over the envelope's median.
+            """
+
+            recording = read_highpassed(reader, search_start, search_stop)
+            envelope = np.abs(hilbert(fftconvolve(recording, template[::-1], 'valid')))
+            peak = int(np.argmax(envelope))
+            return int(search_start) + peak, float(envelope[peak] / np.median(envelope))
+
+        # 3. the microphone that hears the first bout best
+        excluded_channels = set(read_excluded_audio_channels(str(root), logger=self.message_output))
+        first_template = read_highpassed(playback_reader, bouts[0][0], bouts[0][1])
+        first_search_start = round((ttl_start + bouts[0][0] / sr) * sr)
+        first_search_stop = round((ttl_start + bouts[0][1] / sr + float(settings['initial_lag_search_seconds'])) * sr)
+        best_channel = None
+        for channel_wav in sorted(cropped_directory.glob('*_ch*_cropped_to_video.wav')):
+            channel_match = re.match(r'([ms])_\d+_ch(\d{2})_cropped_to_video\.wav$', channel_wav.name)
+            if channel_match is None or f"{channel_match.group(1)}_ch{channel_match.group(2)}" in excluded_channels:
+                continue
+            with sf.SoundFile(str(channel_wav)) as channel_reader:
+                peak_sample, peak_over_median = match_bout(channel_reader, first_template, first_search_start, first_search_stop)
+            if best_channel is None or peak_over_median > best_channel[1]:
+                best_channel = (channel_wav, peak_over_median, peak_sample / sr - (ttl_start + bouts[0][0] / sr))
+        if best_channel is None:
+            msg = f"No usable cropped_to_video channel in {cropped_directory}."
+            raise FileNotFoundError(msg)
+        microphone_wav, _, running_lag = best_channel
+
+        # 4. the lag of every bout
+        lag_search = float(settings['lag_search_seconds'])
+        bout_rows = []
+        with sf.SoundFile(str(microphone_wav)) as microphone_reader:
+            for bout_start, bout_stop in bouts:
+                template = read_highpassed(playback_reader, bout_start, bout_stop)
+                search_start = max(0, round((ttl_start + bout_start / sr + running_lag - lag_search) * sr))
+                search_stop = min(microphone_reader.frames, round((ttl_start + bout_stop / sr + running_lag + lag_search) * sr))
+                if search_stop - search_start <= template.size:
+                    bout_rows.append((bout_start / sr, float('nan'), 0.0))
+                    continue
+                peak_sample, peak_over_median = match_bout(microphone_reader, template, search_start, search_stop)
+                bout_lag = peak_sample / sr - (ttl_start + bout_start / sr)
+                bout_rows.append((bout_start / sr, bout_lag, peak_over_median))
+                if peak_over_median >= float(settings['min_peak_over_median']):
+                    running_lag = bout_lag
+        bout_table = np.array(bout_rows, dtype=float)
+        confident = np.isfinite(bout_table[:, 1]) & (bout_table[:, 2] >= float(settings['min_peak_over_median']))
+        confident_fraction = float(confident.mean())
+        if confident_fraction < float(settings['min_confident_bout_fraction']) or confident.sum() < 2:
+            msg = (f"Only {int(confident.sum())} of {len(bouts)} bouts ({confident_fraction:.0%}) matched the recording confidently; "
+                   f"the playback cannot be aligned for {session_id}.")
+            raise ValueError(msg)
+
+        # 5. the straight-line fit of lag against file time
+        drift, delay = np.polyfit(bout_table[confident, 0], bout_table[confident, 1], 1)
+        residuals = bout_table[confident, 1] - (delay + drift * bout_table[confident, 0])
+
+        def to_session_seconds(file_samples):
+            """
+            Description
+            -----------
+            Maps playback-file sample positions to session seconds with the fit.
+
+            Parameters
+            ----------
+            file_samples (np.ndarray)
+                Positions in the original-rate playback file.
+
+            Returns
+            -------
+            session_seconds (np.ndarray)
+                The same positions on the session (video) timeline.
+            """
+
+            return ttl_start + delay + (np.asarray(file_samples, dtype=float) / sr) * (1.0 + drift)
+
+        # 6. each clip's USV extent, measured on the noise-free file
+        smoothing_samples = max(1, round(float(settings['envelope_smoothing_seconds']) * sr))
+        smoothing_kernel = np.ones(smoothing_samples) / smoothing_samples
+        threshold_fraction = float(settings['usv_extent_threshold_fraction'])
+        usv_onsets = np.empty(len(clip_rows), dtype=np.int64)
+        usv_offsets = np.empty(len(clip_rows), dtype=np.int64)
+        for clip_index, (_, clip_start, clip_stop, _) in enumerate(clip_rows):
+            clip_envelope = np.convolve(np.abs(hilbert(read_highpassed(playback_reader, clip_start, clip_stop))), smoothing_kernel, 'same')
+            above = np.flatnonzero(clip_envelope >= threshold_fraction * clip_envelope.max()) if clip_envelope.max() > 0 else np.empty(0, dtype=np.int64)
+            usv_onsets[clip_index] = clip_start + (int(above[0]) if above.size else 0)
+            usv_offsets[clip_index] = clip_start + (int(above[-1]) + 1 if above.size else clip_stop - clip_start)
+        playback_reader.close()
+
+        position_in_bout = np.zeros(len(clip_rows), dtype=np.int64)
+        for clip_index, (clip_bout, _, _, _) in enumerate(clip_rows):
+            position_in_bout[clip_index] = 1 if clip_index == 0 or clip_rows[clip_index - 1][0] != clip_bout else position_in_bout[clip_index - 1] + 1
+        session_starts = to_session_seconds(usv_onsets)
+        session_stops = to_session_seconds(usv_offsets)
+        playback_table = pls.DataFrame({
+            'usv_id': np.arange(len(clip_rows), dtype=np.int64),
+            'bout_id': np.array([row[0] for row in clip_rows], dtype=np.int64),
+            'position_in_bout': position_in_bout,
+            'start': session_starts,
+            'stop': session_stops,
+            'duration': session_stops - session_starts,
+            'clip_start': to_session_seconds([row[1] for row in clip_rows]),
+            'clip_stop': to_session_seconds([row[2] for row in clip_rows]),
+            'source_clip': [row[3] for row in clip_rows],
+        })
+
+        alignment_summary = {
+            'session_id': session_id,
+            'experiment_code': experiment_code,
+            'played_file': played_file,
+            'original_file': str(original_wav),
+            'ttl_wav': ttl_wav.name,
+            'ttl_start_seconds': ttl_start,
+            'ttl_end_seconds': ttl_end,
+            'microphone_wav': microphone_wav.name,
+            'delay_seconds': float(delay),
+            'drift_ppm': float(drift * 1e6),
+            'residual_sd_ms': float(residuals.std() * 1e3),
+            'residual_max_abs_ms': float(np.abs(residuals).max() * 1e3),
+            'n_bouts': len(bouts),
+            'n_confident_bouts': int(confident.sum()),
+            'n_usvs': len(clip_rows),
+            'bout_file_seconds': bout_table[:, 0].tolist(),
+            'bout_lag_seconds': bout_table[:, 1].tolist(),
+            'bout_peak_over_median': bout_table[:, 2].tolist(),
+            'settings': dict(settings),
+            'created_at': datetime.now().isoformat(timespec='seconds'),
+        }
+
+        audio_directory = root / 'audio'
+        with atomic_output_path(audio_directory / f"{session_id}_played_usvs.csv") as tmp_csv:
+            playback_table.write_csv(tmp_csv)
+        with atomic_output_path(audio_directory / f"{session_id}_playback_alignment.json") as tmp_json, pathlib.Path(tmp_json).open('w') as json_out:
+            json.dump(alignment_summary, json_out, indent=2)
+
+        self.message_output(f"USV playback alignment for {session_id}: {len(clip_rows)} USVs in {len(bouts)} bouts on {microphone_wav.name}; "
+                            f"delay {delay * 1e3:.2f} ms, drift {drift * 1e6:.2f} ppm, residual SD {residuals.std() * 1e3:.3f} ms "
+                            f"({int(confident.sum())}/{len(bouts)} bouts confident).")
+        self.message_output(f"USV playback alignment finished at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
+        return alignment_summary

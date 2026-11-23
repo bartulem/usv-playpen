@@ -1494,9 +1494,9 @@ class TestPlotMultinomialSelectionTrajectory:
         )
         ax_bars = fig.axes[1]
         ticks = np.asarray(ax_bars.get_yticks())
-        bar_top = max(p.get_y() + p.get_height() for p in ax_bars.patches)
+        fold_top = max(float(np.max(c.get_offsets()[:, 1])) for c in ax_bars.collections)
         assert ticks.size >= 2
-        assert ticks.max() >= bar_top - 1e-9
+        assert ticks.max() >= fold_top - 1e-9
         plt.close(fig)
 
 
@@ -1659,9 +1659,8 @@ class TestPlotManifoldSelectionTrajectory:
         fig = plt.gcf()
         x_lo, x_hi = fig.axes[0].get_xlim()
         assert max(x_lo, x_hi) < -3.0
-        # Right panel: anchor bar (1) + one stacked segment per accepted feature
-        # (the fixture has 2), so the final-model bar is genuinely stacked.
-        assert len(fig.axes[1].patches) >= 3
+        # Right panel: one fold scatter per accepted step (the fixture has 2).
+        assert len(fig.axes[1].collections) == 2
 
     @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
     @pytest.mark.parametrize(("geometry", "selection_metric", "primary_label", "secondary_labels"), [
@@ -3248,12 +3247,13 @@ def test_multinomial_trajectory_minimised_metric_prints_signed_deltas(tmp_path):
     second = float(np.mean(steps[1]['candidates_summary']['other.speed']['folds']['metrics']['ll']))
     fig = plot_multinomial_selection_trajectory(selection_results_path=pkl, metric_primary='ll',
                                                 metric_secondary='score', save_plot=False)
-    ax_traj = next(ax for ax in fig.axes if any("Δ" in t.get_text() for t in ax.texts))
+    ax_traj = fig.axes[0]
     labels = [t.get_text() for t in ax_traj.texts if "Δ" in t.get_text()]
-    assert labels[:2] == [f"{first:.3f}  (Δ {first - np.log(3):+.3f})",
-                          f"{second:.3f}  (Δ {second - first:+.3f})"]
+    assert labels[0].endswith(f"(Δ {first - np.log(3):+.3f})")
+    assert labels[1].endswith(f"(Δ {second - first:+.3f})")
     assert ax_traj.xaxis_inverted()
-    assert ax_traj.get_xlim()[0] == pytest.approx(np.log(3) + 0.015 * np.log(3))
+    # The chance end sits 1 % of the trajectory's span past the chance level.
+    assert np.log(3) < ax_traj.get_xlim()[0] < np.log(3) + 0.02 * (np.log(3) - min(first, second))
 
 
 def test_atlas_columns_fall_back_to_the_regular_map_without_the_record():
@@ -3580,10 +3580,13 @@ _REJECTED_ROW_LABELS = {'nose-nose': 'TESTED', 'decoy.feature': 'DECOY',
 @pytest.mark.filterwarnings("ignore:FigureCanvasAgg is non-interactive:UserWarning")
 @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
 @pytest.mark.parametrize('plotter', ['onset', 'multinomial', 'manifold'])
-def test_rejected_row_names_the_step_test_winner_and_its_p(tmp_path, plotter):
-    """The grey rejection row of every trajectory plotter names the feature the
-    step test turned down, with that test's adjusted p, even when another
-    candidate ranks better on the figure's display metric."""
+def test_selection_summary_numbers_steps_and_names_features_inside_bars(tmp_path, plotter):
+    """Every selection summary (binary, multinomial, manifold) numbers its rows
+    by step (the rejected step takes the next number), writes each added
+    feature inside its bar with its change in the metric and no p-value, names
+    the feature the step test turned down on the rejected row even when another
+    candidate ranks better on the display metric, and draws one fold-scatter
+    column per accepted step in each right panel."""
 
     rng = np.random.default_rng(91)
     if plotter == 'onset':
@@ -3603,7 +3606,21 @@ def test_rejected_row_names_the_step_test_winner_and_its_p(tmp_path, plotter):
         fig = plot_manifold_selection_trajectory(selection_results_path=pkl, metric_primary='r2_spatial',
                                                  metric_secondary='pearson_y',
                                                  feature_label_overrides=_REJECTED_ROW_LABELS)
-    labels = [tick.get_text() for tick in fig.axes[0].get_yticklabels()]
+    ax_traj, right_axes = fig.axes[0], fig.axes[1:]
+    tick_labels = [tick.get_text() for tick in ax_traj.get_yticklabels()]
+    bar_texts = [text.get_text() for text in ax_traj.texts]
+    ylabel = ax_traj.get_ylabel()
+    right = [([tick.get_text() for tick in ax.get_xticklabels()], len(ax.collections),
+              [text.get_text() for text in ax.texts]) for ax in right_axes]
     plt.close('all')
-    assert labels[-1] == '+TESTED  p=0.0465'
-    assert not any('DECOY' in label for label in labels)
+    n_accepted = len(bar_texts) - 1
+    assert tick_labels == [str(k) for k in range(1, n_accepted + 2)]
+    assert ylabel == 'Model selection step #'
+    assert bar_texts[-1].startswith('TESTED  (Δ ')
+    assert not any('DECOY' in text for text in bar_texts)
+    assert not any('p=' in text for text in bar_texts + tick_labels)
+    assert all('(Δ ' in text for text in bar_texts)
+    for right_ticks, n_scatter_columns, right_texts in right:
+        assert right_ticks == [str(k) for k in range(1, n_accepted + 1)]
+        assert n_scatter_columns == n_accepted
+        assert right_texts == ['Model selection step #']

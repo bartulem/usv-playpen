@@ -75,18 +75,27 @@ from usv_playpen.analyses.compute_neuronal_tuning_curves import (
     _monotonicity_spearman,
     _peak_z_info,
     _percentiles_block,
+    _playback_modulation,
     _ramp_index,
     _run_analysis,
     _selectivity_index,
     _skaggs_info_rate_bps,
     _skaggs_sparsity,
     _spatial_coherence,
+    _two_sided_shift_p,
     _within_usv_validity,
     behavioral_feature_base,
     generate_ratemaps,
+    load_playback_usvs,
+    peri_onset_window_rates,
+    playback_response_block,
+    playback_triage_summary,
     shuffle_spikes,
 )
-from usv_playpen.analyses.decode_experiment_label import extract_information
+from usv_playpen.analyses.decode_experiment_label import (
+    extract_information,
+    session_is_playback,
+)
 from usv_playpen.analyses.mixture_model_utils import (
     IGMixture,
     TMixture,
@@ -4276,3 +4285,181 @@ def test_summarize_interval_pool_reports_counts_and_percentiles():
     empty = summarize_interval_pool(np.array([]), 0)
     assert empty["n_intervals"] == 0
     assert np.isnan(empty["median_s"])
+
+
+# Playback sessions: the session test, the played-USV loader and the responses
+
+
+def _write_session_code(root: pathlib.Path, code: str | None) -> None:
+    """
+    Description
+    -----------
+    Writes a minimal session metadata YAML carrying an experimental code (or,
+    for None, a Session block without one).
+
+    Parameters
+    ----------
+    root (pathlib.Path)
+        Session root directory.
+    code (str | None)
+        The ``session_experiment_code`` to record, or None to leave it out.
+
+    Returns
+    -------
+    None
+    """
+
+    root.mkdir(parents=True, exist_ok=True)
+    session_lines = ["Session:", "  session_id: test"]
+    if code is not None:
+        session_lines.append(f"  session_experiment_code: {code}")
+    (root / f"{root.name}_metadata.yaml").write_text("\n".join(session_lines) + "\n")
+
+
+@pytest.mark.parametrize(("code", "expected"), [("EPQL1MS", True), ("EUQD1MS", False), ("ECL2MSFSp", False)])
+def test_session_is_playback_reads_the_playback_letter(tmp_path, code, expected):
+    """The P in the experimental code (and only it) marks a playback session."""
+    root = tmp_path / "20250911_202056"
+    _write_session_code(root, code)
+    assert session_is_playback(str(root)) is expected
+
+
+def test_session_is_playback_without_a_code_on_record_is_false(tmp_path):
+    """No metadata file, or a Session block without a code, is not a playback session."""
+    assert session_is_playback(str(tmp_path / "missing")) is False
+    root = tmp_path / "20250911_202056"
+    _write_session_code(root, None)
+    assert session_is_playback(str(root)) is False
+
+
+def _playback_inputs(onsets, offsets, duration=600.0, positions=None, bout_ids=None) -> dict:
+    """
+    Description
+    -----------
+    A `load_playback_usvs`-shaped dict for one USV per bout (or the given bout
+    ids and positions), for the response tests.
+
+    Parameters
+    ----------
+    onsets, offsets (list[float])
+        USV onsets and offsets in seconds.
+    duration (float)
+        Session length in seconds.
+    positions, bout_ids (list[int] | None)
+        Position in bout and bout id per USV; default one USV per bout.
+
+    Returns
+    -------
+    playback (dict)
+        Inputs for `playback_response_block`.
+    """
+
+    onsets = np.asarray(onsets, dtype=float)
+    offsets = np.asarray(offsets, dtype=float)
+    bout_ids = np.arange(onsets.size) if bout_ids is None else np.asarray(bout_ids)
+    positions = np.ones(onsets.size, dtype=np.int64) if positions is None else np.asarray(positions)
+    unique_bouts = np.unique(bout_ids)
+    return {
+        "usv_starts": onsets,
+        "usv_stops": offsets,
+        "usv_bout_id": bout_ids,
+        "usv_position_in_bout": positions,
+        "bout_onsets": np.array([onsets[bout_ids == b].min() for b in unique_bouts]),
+        "bout_offsets": np.array([offsets[bout_ids == b].max() for b in unique_bouts]),
+        "duration_seconds": duration,
+        "csv_name": "test_played_usvs.csv",
+    }
+
+
+def test_load_playback_usvs_derives_bouts_from_the_table(tmp_path):
+    """Bout onsets are each bout's first USV onset and offsets its latest USV offset."""
+    root = tmp_path / "session"
+    root.mkdir()
+    pls.DataFrame({
+        "usv_id": [0, 1, 2, 3],
+        "bout_id": [0, 0, 1, 1],
+        "position_in_bout": [1, 2, 1, 2],
+        "start": [10.0, 10.2, 20.0, 20.1],
+        "stop": [10.5, 10.3, 20.05, 20.4],
+        "duration": [0.5, 0.1, 0.05, 0.3],
+        "clip_start": [9.99, 10.19, 19.99, 20.09],
+        "clip_stop": [10.51, 10.31, 20.06, 20.41],
+        "source_clip": ["a.wav", "b.wav", "c.wav", "d.wav"],
+    }).write_csv(root / "session_played_usvs.csv")
+    with h5py.File(root / "20250101000000_points3d_translated_rotated_metric.h5", "w") as f:
+        f.create_dataset("tracks", data=np.zeros((1500, 1, 2, 3)))
+        f.create_dataset("recording_frame_rate", data=150.0)
+    playback = load_playback_usvs(root)
+    np.testing.assert_allclose(playback["bout_onsets"], [10.0, 20.0])
+    np.testing.assert_allclose(playback["bout_offsets"], [10.5, 20.4])
+    assert playback["duration_seconds"] == pytest.approx(10.0)
+    assert playback["usv_position_in_bout"].tolist() == [1, 2, 1, 2]
+
+
+def test_playback_modulation_index_matches_the_rate_change():
+    """Firing at 30 sp/s during bouts and 10 sp/s in the silence gives index 0.5."""
+    onsets = np.array([10.0, 20.0, 30.0])
+    stops = onsets + 1.0
+    sound_spikes = np.concatenate([np.linspace(o, o + 1.0, 30, endpoint=False) for o in onsets])
+    silence_spikes = np.concatenate([np.linspace(o - 4.0, o - 0.5, 35, endpoint=False) for o in onsets])
+    spikes = np.sort(np.concatenate([sound_spikes, silence_spikes]))
+    result = _playback_modulation(spikes, onsets, stops, (-4.0, -0.5), np.ones(3, dtype=bool))
+    assert result["fr_sound"] == pytest.approx(30.0)
+    assert result["fr_silence"] == pytest.approx(10.0)
+    assert result["index"] == pytest.approx(0.5)
+
+
+def test_playback_response_block_drops_bouts_whose_baseline_holds_sound():
+    """A bout whose baseline window reaches into the previous bout's sound leaves the index."""
+    cfg = {
+        "bout_window_seconds": [-2.0, 3.0], "bout_bin_seconds": 0.02,
+        "usv_window_seconds": [-0.1, 0.25], "usv_bin_seconds": 0.005,
+        "peri_onset_windows": {"usv": {"seconds": [-0.02, 0.02], "clean": False}},
+        "response_lag_seconds": 0.05, "baseline_window_seconds": [-4.0, -0.5],
+        "n_shuffles": 20, "shuffle_guard_seconds": 20.0,
+    }
+    # The second bout starts 2.5 s after the first ends, so its baseline overlaps it.
+    playback = _playback_inputs([10.0, 13.0, 30.0], [10.5, 13.5, 30.5])
+    spikes = np.sort(np.random.default_rng(0).uniform(0.0, 600.0, 3000))
+    payload = playback_response_block(spikes, playback, cfg, np.linspace(20.0, 580.0, 20))
+    assert payload["n_bouts"] == 3
+    assert payload["n_bouts_modulation"] == 2
+    assert payload["peri_onset"]["baseline"]["n"] == 2
+    summary = playback_triage_summary(payload)
+    assert summary["n_bouts_modulation"] == 2
+    assert set(summary) == {"modulation_index", "modulation_p_two_sided", "modulation_wilcoxon_pvalue",
+                            "fr_sound", "fr_silence", "n_bouts", "n_bouts_modulation", "n_usvs", "n_shuffles"}
+
+
+def test_peri_onset_window_rates_keeps_only_clean_usvs_in_a_clean_window():
+    """A USV whose prior window holds a neighbouring USV's tail is left out of that window only."""
+    starts = np.array([10.0, 10.05, 20.0])
+    stops = np.array([10.03, 10.1, 20.05])
+    windows = {"prior": {"seconds": [-0.06, -0.02], "clean": True},
+               "usv": {"seconds": [-0.02, 0.02], "clean": False}}
+    spikes = np.array([10.0, 20.0])
+    rates = peri_onset_window_rates(spikes, starts, stops, windows)
+    # The second USV's prior window (9.99-10.03) overlaps the first USV.
+    assert rates["prior"]["n"] == 2
+    assert rates["usv"]["n"] == 3
+    # One spike in the 40 ms USV windows of the first and third onsets, none in the second's.
+    assert rates["usv"]["mean"] == pytest.approx((25.0 + 0.0 + 25.0) / 3)
+
+
+def test_two_sided_shift_p_counts_draws_as_far_from_the_null_mean():
+    """The p is (1 + draws at least as far from the null mean) / (draws + 1)."""
+    null = np.array([-2.0, -1.0, 0.0, 1.0, 2.0])
+    assert _two_sided_shift_p(2.0, null) == pytest.approx(3 / 6)
+    assert _two_sided_shift_p(5.0, null) == pytest.approx(1 / 6)
+    assert np.isnan(_two_sided_shift_p(np.nan, null))
+
+
+def test_drop_side_keys_playback_removes_only_its_keys():
+    """A playback re-run replaces playback_response and triage_stats['playback'] only."""
+    existing = {"playback_response": {}, "beh_offset=0s": {}, "usv_peth": {},
+                "triage_stats": {"playback": {}, "behavioral": {}}}
+    NeuronalTuning._drop_side_keys(existing, "playback")
+    assert "playback_response" not in existing
+    assert "beh_offset=0s" in existing
+    assert "usv_peth" in existing
+    assert set(existing["triage_stats"]) == {"behavioral"}

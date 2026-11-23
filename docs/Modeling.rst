@@ -751,7 +751,7 @@ cross-validation and held-out-test settings live in their own
       * the angle pairs ``allo_yaw-<node>`` / ``<node>-allo_yaw`` and ``allo_pitch-<node>`` / ``<node>-allo_pitch``, with ``<node>`` one of ``head``, ``nose``, ``TTI``
    :Default: ``["head-head", "allo_yaw-head", "head-allo_yaw", "allo_pitch-head", "head-allo_pitch"]``
    :Notes:
-      * ``head-head`` is the inter-partner distance between the two Head nodes (skull centroids); ``allo_yaw-head`` / ``allo_pitch-head`` are the egocentric yaw / pitch of the partner's Head seen from the predictor mouse's head frame, and ``head-allo_yaw`` / ``head-allo_pitch`` the reverse direction.
+      * ``head-head`` is the self-partner distance between the two Head nodes (skull centroids); ``allo_yaw-head`` / ``allo_pitch-head`` are the egocentric yaw / pitch of the partner's Head seen from the predictor mouse's head frame, and ``head-allo_yaw`` / ``head-allo_pitch`` the reverse direction.
       * The Nose- and TTI-anchored equivalents (``allo_yaw-nose``, ``allo_pitch-TTI``, ...) remain available in every behavioral-features CSV.
       * A name absent from the CSV is skipped silently.
 
@@ -2007,11 +2007,11 @@ axis) is what the univariate pickles store as ``filter_shapes`` and
 
       **Lag-varying ridge (l2_lag_alpha):** with ``l2_lag_alpha`` > 0 the L2 grows with each spline's distance from onset, ``l2_reg_fixed × (1 + alpha × lag²)`` (``lag`` as a fraction of the window), the lag-varying ridge of penalised distributed-lag models, implemented by scaling the basis columns (the stored ``basis_coefficients`` belong to the scaled basis).
 
-      The torus model uses ``alpha = 10``: with a uniform L2 its filters still rose at −4 s, and neither a clamped basis nor much stronger smoothness changed that, whereas the lag-varying ridge brought the far-edge weight of head pitch and neck elevation to their permuted level, kept the recovery of planted shapes (a bump at −3 s included) and the onset rise, and cost no cross-validated gain except for inter-partner distance (−7 %), whose oldest frames carry real information from before the window.
+      The torus model uses ``alpha = 10``: with a uniform L2 its filters still rose at −4 s, and neither a clamped basis nor much stronger smoothness changed that, whereas the lag-varying ridge brought the far-edge weight of head pitch and neck elevation to their permuted level, kept the recovery of planted shapes (a bump at −3 s included) and the onset rise, and cost no cross-validated gain except for self-partner distance (−7 %), whose oldest frames carry real information from before the window.
 
-      The multinomial model uses ``l2_reg_fixed = 1e-5`` with ``alpha = 100``: without them its no-signal fits put a spike at −4 s (inter-partner distance 15.1 against an onset peak of 22.1, ×1e-3), which this setting cuts to 0.76 against 8.8 while costing at most 4 % of the cross-validated macro-AUC (inter-partner distance; under 2 % elsewhere) and keeping the planted-shape recovery at r ≥ 0.89.
+      The multinomial model uses ``l2_reg_fixed = 1e-5`` with ``alpha = 100``: without them its no-signal fits put a spike at −4 s (self-partner distance 15.1 against an onset peak of 22.1, ×1e-3), which this setting cuts to 0.76 against 8.8 while costing at most 4 % of the cross-validated macro-AUC (self-partner distance; under 2 % elsewhere) and keeping the planted-shape recovery at r ≥ 0.89.
 
-      **History window:** the history window stays at 4 s: an 8 s re-extraction showed that the residual far-edge weight of the slow dyadic features is information from before the window (inter-partner distance and head pitch predict ~40 % better with 8 s, with no edge rise in the longer window), while the features that act in the last second gain nothing (neck elevation −14 %); the far-edge weight of a slow feature is read as history beyond the window, not as a timed effect at −4 s.
+      **History window:** the history window stays at 4 s: an 8 s re-extraction showed that the residual far-edge weight of the slow dyadic features is information from before the window (self-partner distance and head pitch predict ~40 % better with 8 s, with no edge rise in the longer window), while the features that act in the last second gain nothing (neck elevation −14 %); the far-edge weight of a slow feature is read as history beyond the window, not as a timed effect at −4 s.
 
       **Multinomial smoothness default:** the multinomial default is ``lambda_smooth_fixed`` = 1e-5 with ``lambda_smooth_decades_each_side`` = 2 (1e-7 to 1e-3), set by a penalty pilot: on the top screened feature, cross-validated macro-AUC is flat from no penalty up to 1e-4 and falls beyond it, as the second-order penalty straightens the filters; 1e-5 is the largest strength with no measurable loss and damps the noise at the oldest lags.
 
@@ -3528,8 +3528,11 @@ generator seeded with ``model_validation.random_seed``, never from NumPy's globa
 held-out score's null and the model selections' held-out nulls follow the same rule.
 
 After the array finishes, merge the per-feature pickles into a single artifact.
-``consolidate_univariate`` asserts metadata equality across every pickle
-(guarding against stray files from a different run), hoists the agreed
+``consolidate_univariate`` asserts ``_input_metadata`` equality across every
+pickle (guarding against stray files from a different extraction); a differing
+``_run_metadata``, as left by a task re-run under a newer package version,
+prints a warning and is recorded per feature in
+``_consolidation_metadata.run_metadata_mismatches``. It hoists the agreed
 ``_input_metadata`` / ``_run_metadata`` / ``_consolidation_metadata`` blocks to the
 top, and emits a self-describing filename:
 
@@ -3788,8 +3791,11 @@ mismatch stops the univariate task, or the selection (for the univariate file
 as well as the input pickle), at load time with exit status 1 and a message
 naming the type to rerun with; an artifact that does not record the field is
 not checked. Consolidate the model-selection steps with
-``consolidate_model_selection`` (the same metadata-equality guard and metadata
-hoisting as the univariate consolidator above):
+``consolidate_model_selection`` (the same metadata hoisting and the same
+warning for a differing ``_run_metadata`` as the univariate consolidator above,
+as left by a selection resumed under a newer package version: step 0's block is
+kept and each differing step is recorded; ``_input_metadata`` and
+``_univariate_metadata`` must agree across step files):
 
 .. code-block:: python
 

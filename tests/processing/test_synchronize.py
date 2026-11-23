@@ -29,7 +29,9 @@ from unittest.mock import MagicMock
 
 import cv2
 import numpy as np
+import polars as pls
 import pytest
+import soundfile
 from scipy.io import wavfile
 from scipy.io.wavfile import read as _real_wavfile_read
 
@@ -2051,3 +2053,134 @@ def test_validate_ephys_video_sync_refuses_a_second_changepoints_file(tmp_path, 
                         message_output=lambda *_a, **_k: None)
     with pytest.raises(ValueError, match=r"changepoints_info_20250919_imec0_copy.json"):
         sync.validate_ephys_video_sync()
+
+
+# align_usv_playback: a synthetic playback session with a known delay and drift
+
+_PLAYBACK_SR = 250000
+
+
+def _chirp(n_samples: int, rng: np.random.Generator) -> np.ndarray:
+    """
+    Description
+    -----------
+    A frequency sweep in the USV band with a random start and end frequency,
+    so every clip correlates only with itself.
+
+    Parameters
+    ----------
+    n_samples (int)
+        Length in samples at 250 kHz.
+    rng (np.random.Generator)
+        Random generator.
+
+    Returns
+    -------
+    chirp (np.ndarray)
+        The sweep, amplitude 0.5.
+    """
+
+    t = np.arange(n_samples) / _PLAYBACK_SR
+    f0, f1 = rng.uniform(45e3, 75e3, 2)
+    phase = 2 * np.pi * (f0 * t + 0.5 * (f1 - f0) / t[-1] * t ** 2)
+    return 0.5 * np.sin(phase)
+
+
+def _build_playback_session(tmp_path, code: str, delay: float, drift: float):
+    """
+    Description
+    -----------
+    Writes a playback session: a playback file of four bouts (side-cars and
+    original WAV) and a recording whose master channel 3 carries the TTL in
+    its least significant bit and whose master channel 10 hears the file
+    starting `delay` s after the TTL drop, its clock running `drift` faster.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Test directory.
+    code (str)
+        The session's experimental code.
+    delay (float)
+        Seconds from the TTL drop to the file's first sample.
+    drift (float)
+        Relative rate error of the playback clock (e.g. -4e-4).
+
+    Returns
+    -------
+    root, playback_dir, ttl_start, usv_onsets_file (tuple)
+        Session root, playback folder, TTL drop time and the USVs' onsets in
+        file seconds.
+    """
+
+    rng = np.random.default_rng(1)
+    playback_dir = tmp_path / "playback"
+    playback_dir.mkdir()
+    pad = int(0.005 * _PLAYBACK_SR)
+    chunks, labels, signal, usv_onsets_file = [], [], [], []
+    position = 0
+    for bout in range(4):
+        for item, length in (("ISI", int((0.5 + 0.3 * bout) * _PLAYBACK_SR)),
+                             ("clip", int(0.04 * _PLAYBACK_SR)), ("IUI", int(0.05 * _PLAYBACK_SR)),
+                             ("clip", int(0.03 * _PLAYBACK_SR))):
+            if item == "clip":
+                segment = np.zeros(length)
+                segment[pad:length - pad] = _chirp(length - 2 * pad, rng)
+                usv_onsets_file.append((position + pad) / _PLAYBACK_SR)
+                labels.append(f"s_test_b{bout}_{len(labels)}.wav")
+            else:
+                segment = np.zeros(length)
+                labels.append(item)
+            chunks.append(length)
+            signal.append(segment)
+            position += length
+    file_signal = np.concatenate(signal)
+    soundfile.write(playback_dir / "test_pb.wav", (file_signal * 32767).astype(np.int16), _PLAYBACK_SR, subtype="PCM_16")
+    (playback_dir / "test_pb_spacing.txt").write_text("\n".join(str(c) for c in chunks) + "\n")
+    (playback_dir / "test_pb_usvids.txt").write_text("\n".join(labels) + "\n")
+
+    root = tmp_path / "20250911_202056"
+    cropped = root / "audio" / "cropped_to_video"
+    cropped.mkdir(parents=True)
+    (root / "20250911_202056_metadata.yaml").write_text(
+        f"Session:\n  session_experiment_code: {code}\n  session_usv_playback_file: test_pb_192kHz.wav\n")
+    ttl_start = 1.0
+    n_recording = int((ttl_start + delay + file_signal.size / _PLAYBACK_SR + 1.0) * _PLAYBACK_SR)
+    t = np.arange(n_recording) / _PLAYBACK_SR
+    file_time = (t - ttl_start - delay) / (1.0 + drift)
+    heard = np.interp(file_time * _PLAYBACK_SR, np.arange(file_signal.size), file_signal, left=0.0, right=0.0)
+    mic = (heard * 8000 + rng.normal(0, 30, n_recording)).astype(np.int16)
+    ttl_bit = np.ones(n_recording, dtype=np.int16)
+    ttl_bit[(t >= ttl_start) & (t < ttl_start + delay + file_signal.size / _PLAYBACK_SR + 0.01)] = 0
+    ttl_channel = (rng.normal(0, 30, n_recording).astype(np.int16) & ~1) | ttl_bit
+    soundfile.write(cropped / "m_250911202057_ch03_cropped_to_video.wav", ttl_channel, _PLAYBACK_SR, subtype="PCM_16")
+    soundfile.write(cropped / "m_250911202057_ch10_cropped_to_video.wav", mic, _PLAYBACK_SR, subtype="PCM_16")
+    return root, playback_dir, ttl_start, np.array(usv_onsets_file)
+
+
+def test_align_usv_playback_recovers_delay_drift_and_usv_times(tmp_path, processing_settings):
+    """The fit recovers the planted delay and drift, and every USV lands where they put it."""
+    delay, drift = 0.09, -4e-4
+    root, playback_dir, ttl_start, onsets_file = _build_playback_session(tmp_path, "EPQL1MS", delay, drift)
+    processing_settings["synchronize_files"]["Synchronizer"]["align_usv_playback"]["playback_files_directory"] = str(playback_dir)
+    summary = _make_sync(root, processing_settings).align_usv_playback()
+    assert summary["delay_seconds"] == pytest.approx(delay, abs=2e-4)
+    assert summary["drift_ppm"] == pytest.approx(drift * 1e6, abs=60.0)
+    assert summary["n_bouts"] == 4
+    assert summary["n_confident_bouts"] == 4
+    assert summary["microphone_wav"] == "m_250911202057_ch10_cropped_to_video.wav"
+    table = pls.read_csv(root / "audio" / "20250911_202056_played_usvs.csv")
+    assert table.height == onsets_file.size
+    assert table["bout_id"].to_list() == [0, 0, 1, 1, 2, 2, 3, 3]
+    assert table["position_in_bout"].to_list() == [1, 2] * 4
+    expected = ttl_start + delay + onsets_file * (1.0 + drift)
+    np.testing.assert_allclose(table["start"].to_numpy(), expected, atol=1e-3)
+    assert (root / "audio" / "20250911_202056_playback_alignment.json").is_file()
+
+
+def test_align_usv_playback_skips_a_session_without_the_playback_code(tmp_path, processing_settings):
+    """A session whose code lacks P is skipped and nothing is written."""
+    root, playback_dir, _, _ = _build_playback_session(tmp_path, "EUQD1MS", 0.09, 0.0)
+    processing_settings["synchronize_files"]["Synchronizer"]["align_usv_playback"]["playback_files_directory"] = str(playback_dir)
+    assert _make_sync(root, processing_settings).align_usv_playback() is None
+    assert not (root / "audio" / "20250911_202056_played_usvs.csv").exists()

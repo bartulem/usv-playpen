@@ -327,6 +327,81 @@ def _flag_ibi_bout_onset(payload: dict, statistic: str, alpha: float,
     return "excit" if observed > 1.0 else "suppress"
 
 
+def _extract_playback_metrics(payload: dict) -> dict:
+    """
+    Description
+    -----------
+    Pull the scalar fields from a playback block (`triage_stats["playback"]`, written by
+    `playback_triage_summary` for sessions whose experimental code marks them as USV
+    playback): the playback modulation index, (rate during the bout - baseline) / (their
+    sum), its circular-shift-null and paired-Wilcoxon p-values, the two rates behind it,
+    and the counts the tests rest on.
+
+    Parameters
+    ----------
+    payload (dict)
+        The `triage_stats["playback"]` block.
+
+    Returns
+    -------
+    metrics (dict)
+        ``modulation_index``, ``modulation_p_two_sided``, ``modulation_wilcoxon_pvalue``,
+        ``fr_sound`` and ``fr_silence`` as finite floats (None when not finite), and
+        ``n_bouts``, ``n_bouts_modulation``, ``n_usvs`` and ``n_shuffles``.
+    """
+
+    return {
+        "modulation_index": _safe_float(payload["modulation_index"]),
+        "modulation_p_two_sided": _safe_float(payload["modulation_p_two_sided"]),
+        "modulation_wilcoxon_pvalue": _safe_float(payload["modulation_wilcoxon_pvalue"]),
+        "fr_sound": _safe_float(payload["fr_sound"]),
+        "fr_silence": _safe_float(payload["fr_silence"]),
+        "n_bouts": _safe_float(payload["n_bouts"]),
+        "n_bouts_modulation": _safe_float(payload["n_bouts_modulation"]),
+        "n_usvs": _safe_float(payload["n_usvs"]),
+        "n_shuffles": _safe_float(payload["n_shuffles"]),
+    }
+
+
+def _flag_playback(payload: dict, alpha: float, min_bouts: int) -> str | None:
+    """
+    Description
+    -----------
+    Whether a unit's firing is modulated by the played USV bouts, and in which direction.
+
+    The flag rests on the circular-shift null of the playback modulation index (the spike
+    train shifted against the fixed playback schedule, so slow rate drift is part of the
+    null); the paired Wilcoxon p is carried as a metric but does not gate. The gate is a
+    per-unit alpha with no correction across units, as for every other modality here. A unit
+    needs `min_bouts` bouts in the index (the bouts whose baseline window is clean of the
+    previous bout's sound) before the question is asked at all.
+
+    Parameters
+    ----------
+    payload (dict)
+        The `triage_stats["playback"]` block.
+    alpha (float)
+        Two-sided level the shift-null p must be at most.
+    min_bouts (int)
+        Fewest bouts in the modulation index required to flag anything.
+
+    Returns
+    -------
+    direction (str | None)
+        'excit' for a positive modulation index, 'suppress' for a negative one, and None
+        when not significant or not testable.
+    """
+
+    metrics = _extract_playback_metrics(payload)
+    n_bouts = metrics["n_bouts_modulation"]
+    if n_bouts is None or n_bouts < min_bouts:
+        return None
+    index, p_value = metrics["modulation_index"], metrics["modulation_p_two_sided"]
+    if index is None or p_value is None or p_value > alpha:
+        return None
+    return "excit" if index > 0 else "suppress"
+
+
 def _flag_vmi(
     vmi_payload: dict, alpha: float, min_bouts: int
 ) -> tuple[str | None, dict | None]:
@@ -567,6 +642,8 @@ def flag_one_cluster(
     vmi_min_bouts: int,
     ibi_bout_alpha: float,
     ibi_bout_min_bouts: int,
+    playback_alpha: float,
+    playback_min_bouts: int,
     spatial_info_bps_threshold: float,
 ) -> dict[str, dict]:
     """
@@ -594,10 +671,13 @@ def flag_one_cluster(
       usv_category_peth_<role>_<cat_feat>_<direction>
       behavioral_<offset>_<feature>_<direction>
       spatial_<offset>_<feature>
+      playback_<excit|suppress>
 
     For VMI, `direction` is inferred from the sign of `vmi`: positive ->
     `excit`, negative -> `suppress`. If `vmi` is non-finite the block is
-    omitted (no direction can be assigned).
+    omitted (no direction can be assigned). The playback key (present only
+    for USV-playback sessions, which carry no vocal blocks) takes its
+    direction from the sign of the playback modulation index the same way.
 
     Parameters
     ----------
@@ -624,6 +704,14 @@ def flag_one_cluster(
         can be flagged significant; below it the record is still emitted
         (``tested`` True) with ``significant`` False. See
         `_flag_ibi_bout_onset`.
+    playback_alpha (float)
+        Two-sided level the circular-shift-null p of the playback
+        modulation index must be at most. See `_flag_playback`.
+    playback_min_bouts (int)
+        Fewest bouts in the playback modulation index before the unit
+        can be flagged; below it the record is still emitted
+        (``tested`` True) with ``significant`` False. See
+        `_flag_playback`.
     spatial_info_bps_threshold (float)
         Skaggs information-rate cutoff (bits/spike) for spatial
         modalities. See `_flag_spatial`.
@@ -858,6 +946,22 @@ def flag_one_cluster(
                 **metrics,
             }
 
+    # playback: one block per unit in USV-playback sessions (the played USVs, not an emitter's
+    # own, so there is no role). Pickles of other sessions, and those written before playback
+    # responses existed, carry no block, hence the membership check.
+    if "playback" in ts and isinstance(ts["playback"], dict):
+        metrics = _extract_playback_metrics(ts["playback"])
+        index = metrics["modulation_index"]
+        if index is not None:
+            inferred = "excit" if index > 0 else "suppress"
+            direction = _flag_playback(ts["playback"], alpha=playback_alpha,
+                                       min_bouts=playback_min_bouts)
+            records[f"playback_{inferred}"] = {
+                "tested": True,
+                "significant": direction is not None,
+                **metrics,
+            }
+
     return records
 
 
@@ -884,7 +988,9 @@ def _load_default_thresholds() -> dict:
     -------
     cfg (dict)
         Dict with keys `z_threshold`, `min_consecutive_bins`,
-        `vmi_alpha`, `vmi_min_bouts`, `spatial_info_bps_threshold`.
+        `vmi_alpha`, `vmi_min_bouts`, `ibi_bout_alpha`,
+        `ibi_bout_min_bouts`, `playback_alpha`, `playback_min_bouts`,
+        `spatial_info_bps_threshold`.
     """
 
     settings_path = (
@@ -957,12 +1063,15 @@ def _aggregate_modality_stats(mod_key: str, per_session: list[dict]) -> dict:
       * `ibi_bout_onset_*`   -> median_onset_gain, min_onset_gain_p
       * `ibi_bout_first_usv_*` -> median_first_over_later,
         min_first_over_later_p
+      * `playback_*`         -> max_abs_modulation_index,
+        median_modulation_index, min_modulation_p_two_sided
       * everything else      -> max_abs_peak_z, median_peak_z
 
     The IBI bout-onset records carry no `peak_z` (their statistics are a
     rate ratio and a first-over-later ratio, each with a two-sided shift-null
     p), so they get their own branch; falling through to the run-based
-    default would always return `None`.
+    default would always return `None`. The playback records likewise
+    carry a modulation index and its shift-null p rather than a `peak_z`.
 
     The aggregates summarize the full distribution across *all* tested
     sessions in `per_session` regardless of each session's `significant`
@@ -1054,6 +1163,16 @@ def _aggregate_modality_stats(mod_key: str, per_session: list[dict]) -> dict:
             ),
             f"min_{statistic}_p": min(ps, default=None),
         }
+    if mod_key.startswith("playback_"):
+        indices = _vals("modulation_index")
+        ps = _vals("modulation_p_two_sided")
+        return {
+            "max_abs_modulation_index": max((abs(v) for v in indices), default=None),
+            "median_modulation_index": (
+                float(np.median(indices)) if indices else None
+            ),
+            "min_modulation_p_two_sided": min(ps, default=None),
+        }
     # run-based: usv_peth_, usv_property_, usv_category_peth_, behavioral_
     pzs = _vals("peak_z")
     return {
@@ -1078,6 +1197,8 @@ def aggregate_units_across_conditions(
     vmi_min_bouts: int | None = None,
     ibi_bout_alpha: float | None = None,
     ibi_bout_min_bouts: int | None = None,
+    playback_alpha: float | None = None,
+    playback_min_bouts: int | None = None,
     spatial_info_bps_threshold: float | None = None,
     message_output: Callable = print,
 ) -> pathlib.Path:
@@ -1112,6 +1233,7 @@ def aggregate_units_across_conditions(
         "thresholds_used": {z_threshold, min_consecutive_bins,
                             vmi_alpha, vmi_min_bouts,
                             ibi_bout_alpha, ibi_bout_min_bouts,
+                            playback_alpha, playback_min_bouts,
                             spatial_info_bps_threshold},
         "catalog_path": str,
         "data_root": str,
@@ -1179,6 +1301,12 @@ def aggregate_units_across_conditions(
         Fewest IBI bouts before a bout-onset label is assigned at all.
     vmi_min_bouts (int | None)
         Override for the VMI minimum-bout requirement.
+    playback_alpha (float | None)
+        Two-sided level for the playback-modulation labels (on the
+        circular-shift-null p); falls back to the settings default.
+    playback_min_bouts (int | None)
+        Fewest bouts in the playback modulation index before a playback
+        label is assigned at all; falls back to the settings default.
     spatial_info_bps_threshold (float | None)
         Override for the Skaggs info-rate (bits/spike) cutoff.
     message_output (Callable)
@@ -1239,6 +1367,16 @@ def aggregate_units_across_conditions(
             ibi_bout_min_bouts
             if ibi_bout_min_bouts is not None
             else defaults["ibi_bout_min_bouts"]
+        ),
+        "playback_alpha": (
+            playback_alpha
+            if playback_alpha is not None
+            else defaults["playback_alpha"]
+        ),
+        "playback_min_bouts": (
+            playback_min_bouts
+            if playback_min_bouts is not None
+            else defaults["playback_min_bouts"]
         ),
         "spatial_info_bps_threshold": (
             spatial_info_bps_threshold

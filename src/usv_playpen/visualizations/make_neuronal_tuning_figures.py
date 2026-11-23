@@ -38,6 +38,7 @@ from matplotlib import patheffects as mpe
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.patches import Circle, Patch, Rectangle
+from matplotlib.transforms import Bbox
 from scipy import ndimage
 from scipy.stats import gaussian_kde, spearmanr
 from tqdm import tqdm
@@ -51,7 +52,7 @@ from ..analyses.compute_neuronal_tuning_curves import (
     ibi_bout_runs,
     weighted_usv_response,
 )
-from ..analyses.decode_experiment_label import extract_information
+from ..analyses.decode_experiment_label import extract_information, session_is_playback
 from ..os_utils import (
     QLVM_CATEGORY_COLUMN,
     QLVM_CATEGORY_COLUMNS,
@@ -99,6 +100,17 @@ PROPERTY_ROW_ORDER = (
 # on the behavioral pages (matched on the base name, so derivatives go too).
 # TTI-TTI (tail-to-tail distance) is left off the social page.
 PLOT_EXCLUDED_BEHAVIORAL_FEATURES: tuple[str, ...] = ("TTI-TTI",)
+
+# Playback speaker position (X, Y in cm, the tracking frame of the spatial maps,
+# where the arena corners sit at North (-33.4, 33.4), East (33.4, 33.4), South
+# (33.4, -33.4) and West (-33.4, -33.4)), marked on the 2D occupancy panel of
+# playback sessions. Keyed by session year: in 2024 the speaker hung above the
+# West corner; from 2025 it stood behind the middle of the south-west wall.
+PLAYBACK_SPEAKER_POSITION_CM: dict[str, tuple[float, float]] = {
+    "2024": (-33.4, -33.4),
+    "2025": (0.0, -33.4),
+}
+PLAYBACK_SPEAKER_COLOR = "#E69F00"
 
 # Section (c) layout: one row per QLVM category column
 # (os_utils.QLVM_CATEGORY_COLUMNS: the regular map's qlvm_category only; there is
@@ -194,7 +206,8 @@ def load_qlvm_category_segmentation() -> dict[str, dict]:
     -------
     segmentation (dict[str, dict])
         ``{"qlvm_category": {label_grid, xx, yy, bounds, unique_labels, names,
-        identity}}``; ``names`` are ``R-1`` ... ``R-k`` and ``identity`` the
+        identity, descriptions}}``; ``names`` are ``R-1`` ... ``R-k``,
+        ``descriptions`` their short descriptions (simple, biphones, ...) and ``identity`` the
         bundle's provenance line.
 
     Raises
@@ -215,6 +228,7 @@ def load_qlvm_category_segmentation() -> dict[str, dict]:
             "bounds": np.array([0.0, 1.0, 0.0, 1.0]),
             "unique_labels": np.unique(bundle["label_grid"]).astype(np.int64).tolist(),
             "names": bundle["names"],
+            "descriptions": bundle["descriptions"],
             "identity": bundle["identity"],
         }
     }
@@ -449,6 +463,37 @@ def _decide_strip_xscale(
     if (finite.max() / positive.min()) > log_ratio_threshold:
         return "symlog"
     return "linear"
+
+
+
+def playback_speaker_position_cm(session_root: str) -> tuple[float, float] | None:
+    """
+    Description
+    -----------
+    Returns where the playback speaker stood in a playback session, or None for
+    any other session. A session counts as playback when its experimental code
+    carries the playback letter P (``session_is_playback``); the position comes
+    from PLAYBACK_SPEAKER_POSITION_CM by the session's year (the first four
+    characters of the session folder name), and a year missing from that table
+    means no marker.
+
+    Parameters
+    ----------
+    session_root (str)
+        Session root directory (holds the *_metadata.yaml).
+
+    Returns
+    -------
+    position (tuple[float, float] or None)
+        Speaker X and Y in cm in the spatial maps' tracking frame, or None.
+    """
+
+    if not session_is_playback(session_root):
+        return None
+    year = pathlib.Path(session_root).name[:4]
+    if year not in PLAYBACK_SPEAKER_POSITION_CM:
+        return None
+    return PLAYBACK_SPEAKER_POSITION_CM[year]
 
 
 class NeuronalTuningFigureMaker(FeatureZoo):
@@ -804,24 +849,30 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         fig_format = str(self.visualizations_parameter_dict["figures"]["fig_format"]).lower()
 
+        # A playback session's USV summary holds the played USVs as recorded, not
+        # the animal's own, so its vocal pages are not drawn and the summary is
+        # not loaded; its played USVs are drawn on the playback page instead.
+        playback_session = session_is_playback(str(root))
+
         # try to load USV summary for the bout raster (left subplot of section a).
         usv_summary_df = None
-        try:
-            csv_path = first_match_or_raise(
-                root=root,
-                pattern="*_usv_summary.csv",
-                recursive=True,
-                label="USV summary CSV",
-            )
-            # Same rules as the tuning curves these rasters accompany: the segments the noise
-            # classifier flagged are not vocalizations, so they are not drawn, and every row is
-            # timed as its vocalization (os_utils.vocal_event_times over every class: a pure
-            # squeak at its squeak extent, an overlap segment at the union of segment and squeak),
-            # so the bouts drawn are the bouts the statistics used.
-            usv_summary_df = drop_noise_usvs(pls.read_csv(str(csv_path)), csv_path.name)[0]
-            usv_summary_df = vocal_event_times(usv_summary_df, VOCAL_CLASSES, csv_path.name)
-        except (StopIteration, FileNotFoundError):
-            pass
+        if not playback_session:
+            try:
+                csv_path = first_match_or_raise(
+                    root=root,
+                    pattern="*_usv_summary.csv",
+                    recursive=True,
+                    label="USV summary CSV",
+                )
+                # Same rules as the tuning curves these rasters accompany: the segments the noise
+                # classifier flagged are not vocalizations, so they are not drawn, and every row is
+                # timed as its vocalization (os_utils.vocal_event_times over every class: a pure
+                # squeak at its squeak extent, an overlap segment at the union of segment and squeak),
+                # so the bouts drawn are the bouts the statistics used.
+                usv_summary_df = drop_noise_usvs(pls.read_csv(str(csv_path)), csv_path.name)[0]
+                usv_summary_df = vocal_event_times(usv_summary_df, VOCAL_CLASSES, csv_path.name)
+            except (StopIteration, FileNotFoundError):
+                pass
 
         # try to load tracking H5 (for behavioral mouse colors / animal IDs).
         # Search the whole session tree — mirrors `_load_behavioral_inputs`
@@ -891,8 +942,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             # PdfPages — on the installed matplotlib (3.10.7) closing one
             # with zero pages writes no file (it does not raise), so the
             # guard avoids producing an empty/zero-page artifact.
+            has_playback = "playback_response" in cluster_data
             behavioral_renderable = has_behavioral and bool(mouse_id_list)
-            if not (behavioral_renderable or has_vocal):
+            if not (behavioral_renderable or has_vocal or has_playback):
                 continue
             out_path = tuning_dir / f"{cluster_id}_neuronal_tuning.{fig_format}"
             # Figures open before this cluster; a page that raises halfway is never handed to
@@ -917,6 +969,12 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                             cluster_data=cluster_data,
                             usv_summary_df=usv_summary_df,
                             segmentation=segmentation,
+                            save_fig=save_fig,
+                        )
+                    if has_playback:
+                        self._render_playback_page(
+                            cluster_id=cluster_id,
+                            playback=cluster_data["playback_response"],
                             save_fig=save_fig,
                         )
             except Exception as exc:  # collected and re-raised after the loop
@@ -5717,7 +5775,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         -----------
         Yield a `save_fig(fig, label)` callable that persists each
         rendered figure. For PDF, all pages go into one file via
-        `PdfPages`. For other formats (PNG / SVG / EPS / etc.), each
+        `PdfPages`, every page the same width (`_write_uniform_pdf`): the
+        figures are held until the unit's last page is rendered and are only
+        written when the unit's rendering finished without an error. For other formats (PNG / SVG / EPS / etc.), each
         page is saved as its own file with `_p{N}_{label}` suffix.
 
         Parameters
@@ -5745,35 +5805,33 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         dpi = int(figures_settings["dpi"])
 
         if fig_format == "pdf":
-            with PdfPages(out_path) as pdf:
-                page_idx = {"n": 0}
+            pages: list = []
 
-                def save_fig(fig, label: str) -> None:  # noqa: ARG001
-                    """
-                    Description
-                    -----------
-                    PDF backend: append the rendered figure to the
-                    open `PdfPages` document at the configured DPI,
-                    then close it. The `label` argument is unused (PDF
-                    pages have no per-page filename) but kept for
-                    signature parity with the non-PDF branch.
+            def save_fig(fig, label: str) -> None:  # noqa: ARG001
+                """
+                Description
+                -----------
+                PDF backend: hold the rendered figure until the unit's
+                last page, so every page can be written at one common
+                size. The `label` argument is unused (PDF pages have no
+                per-page filename) but kept for signature parity with
+                the non-PDF branch.
 
-                    Parameters
-                    ----------
-                    fig (matplotlib.figure.Figure)
-                        Figure to commit and close.
-                    label (str)
-                        Short page label (ignored in this branch).
+                Parameters
+                ----------
+                fig (matplotlib.figure.Figure)
+                    Figure to hold.
+                label (str)
+                    Short page label (ignored in this branch).
 
-                    Returns
-                    -------
-                    None
-                    """
-                    page_idx["n"] += 1
-                    pdf.savefig(fig, dpi=dpi)
-                    plt.close(fig)
+                Returns
+                -------
+                None
+                """
+                pages.append(fig)
 
-                yield save_fig
+            yield save_fig
+            self._write_uniform_pdf(out_path, pages, dpi)
         else:
             page_idx = {"n": 0}
             out_dir = out_path.parent
@@ -5808,6 +5866,44 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 plt.close(fig)
 
             yield save_fig
+
+    @staticmethod
+    def _write_uniform_pdf(out_path: pathlib.Path, pages: list, dpi: int) -> None:
+        """
+        Description
+        -----------
+        Writes a unit's pages into one PDF with every page the same width: each
+        page's content is cropped to its tight bounding box (plus the
+        ``savefig.pad_inches`` margin) and centred on a page as wide as the
+        widest of them, while each page keeps its own height, so a short page
+        carries no empty space below its content. Closes every figure.
+
+        Parameters
+        ----------
+        out_path (pathlib.Path)
+            The PDF to write.
+        pages (list[matplotlib.figure.Figure])
+            The unit's pages in order.
+        dpi (int)
+            Resolution of the rasterized artists.
+
+        Returns
+        -------
+        None
+        """
+
+        pad = float(plt.rcParams["savefig.pad_inches"])
+        content_boxes = []
+        for fig in pages:
+            fig.canvas.draw()
+            content_boxes.append(fig.get_tightbbox(fig.canvas.get_renderer()).padded(pad))
+        page_width = max(box.width for box in content_boxes)
+        with PdfPages(out_path) as pdf:
+            for fig, box in zip(pages, content_boxes, strict=True):
+                left = box.x0 - 0.5 * (page_width - box.width)
+                page_box = Bbox.from_bounds(left, box.y0, page_width, box.height)
+                pdf.savefig(fig, dpi=dpi, bbox_inches=page_box)
+                plt.close(fig)
 
     # per-cluster page rendering
 
@@ -5906,6 +6002,13 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         occ_threshold_setting = float(
             cluster_data["behavioral_metadata"]["behavioral_min_occupancy_seconds"]
         )
+        # Playback sessions get the speaker marked on each 2D occupancy panel,
+        # converted from cm to the map's pixel coordinates (bins span
+        # +/- spatial_scale_cm along each axis; pixel centers sit at integer
+        # positions; the bins per axis come from the map's own shape).
+        speaker_position_cm = playback_speaker_position_cm(str(self.root_directory))
+        spatial_scale_cm = (float(cluster_data["behavioral_metadata"]["spatial_scale_cm"])
+                            if speaker_position_cm is not None else None)
 
         for offset in beh_offset_keys:
             for plot_feature_key, features in plot_features.items():
@@ -5995,9 +6098,29 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                                 cmap=mouse_colormap, vmin=0,
                                 interpolation="gaussian", aspect="equal", origin="lower",
                             )
+                            if speaker_position_cm is not None:
+                                # The wall (33.4 cm) lies just outside the binned
+                                # square (+/- spatial_scale_cm), so the marker is pinned
+                                # to the map's edge on that wall.
+                                speaker_px = [
+                                    (min(max(coordinate, -spatial_scale_cm), spatial_scale_cm) + spatial_scale_cm)
+                                    / (2 * spatial_scale_cm) * n_axis_bins - 0.5
+                                    for coordinate, n_axis_bins in zip(
+                                        speaker_position_cm,
+                                        np.asarray(feat_payload["occupancy_seconds"]).shape,
+                                        strict=True,
+                                    )
+                                ]
+                                ax2.autoscale(False)
+                                ax2.plot(
+                                    speaker_px[0], speaker_px[1], marker="o", markersize=6,
+                                    color=PLAYBACK_SPEAKER_COLOR, markeredgecolor="#000000",
+                                    markeredgewidth=0.6, clip_on=False, zorder=5,
+                                )
                             ax2.set_xticks([])
                             ax2.set_yticks([])
-                            ax2.set_xlabel("X (cm)", fontsize=10, labelpad=1)
+                            # a speaker on the bottom edge would sit on the label
+                            ax2.set_xlabel("X (cm)", fontsize=10, labelpad=5 if speaker_position_cm is not None else 1)
                             ax2.set_ylabel("Y (cm)", fontsize=10, labelpad=1)
 
                             ax2_pos = gs[gs_x, gs_y + 1].get_position(fig)
@@ -6174,6 +6297,176 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                                 gs_x += 1
 
                 save_fig(fig, f"behavioral_{offset}_{plot_feature_key}")
+
+    def _render_playback_page(self, cluster_id: str, playback: dict, save_fig) -> None:
+        """
+        Description
+        -----------
+        Draws one unit's responses to the played USVs of a playback session
+        (the `playback_response` pkl block) on one page:
+
+          (a) raster around every bout's first USV onset, each row shaded over
+              its bout, with the mean firing rate and its SEM (Gaussian-smoothed
+              over ``playback_rate_smooth_bins`` bins, in ``playback_rate_color``)
+              on the right axis
+          (b) the same around every bout's last USV offset
+          (c) the same around every played USV's onset, the rows ordered by
+              position in the bout (first USVs at the top), each shaded over its
+              USV
+          (d) mean firing rate (± SEM, no caps) in the baseline (the silence
+              before each kept bout, black) and in the prior, USV and post
+              windows around every USV onset (prior and post from the USVs no
+              other played USV overlaps there)
+          (e) the playback modulation index: per bout, the firing rate during
+              the bout against the baseline rate in the silence before it, on
+              equal axes spanning the points
+
+        Parameters
+        ----------
+        cluster_id (str)
+            Unit identifier for the page title.
+        playback (dict)
+            The unit's `playback_response` block.
+        save_fig (Callable[[Figure, str], None])
+            Persists the page; closes the figure.
+
+        Returns
+        -------
+        None
+        """
+
+        page_settings = self.visualizations_parameter_dict["neuronal_tuning_figures"]
+        ink = page_settings["ink_color"]
+        dash = page_settings["dash_color"]
+        sound_color = page_settings["playback_sound_color"]
+        rate_color = page_settings["playback_rate_color"]
+        smooth_bins = float(page_settings["playback_rate_smooth_bins"])
+
+        fig = plt.figure(figsize=tuple(page_settings["playback_page_figsize_inches"]))
+        outer = gridspec.GridSpec(2, 1, figure=fig, height_ratios=[1.0, 1.0], hspace=0.38,
+                                  left=0.06, right=0.95, top=0.91, bottom=0.08)
+        # (a), (b) and (c) share one width; the fourth column is empty space.
+        top = gridspec.GridSpecFromSubplotSpec(1, 4, subplot_spec=outer[0], width_ratios=[1.0, 1.0, 1.0, 0.25], wspace=0.42)
+        tick_size = 11
+        bottom = gridspec.GridSpecFromSubplotSpec(1, 3, subplot_spec=outer[1], width_ratios=[1.3, 1.0, 1.0], wspace=0.42)
+
+        def raster_with_rate(spec, block, order, shade_sign, title, xlabel, row_label):
+            """
+            Description
+            -----------
+            Draws a raster (rows in `order`, top first) with each row shaded over
+            its sound, and the smoothed mean firing rate on a right-hand axis.
+
+            Parameters
+            ----------
+            spec (SubplotSpec)
+                Where to draw.
+            block (dict)
+                A `bout_onset` / `bout_offset` / `usv_onset` payload.
+            order (np.ndarray)
+                Row order, top first.
+            shade_sign (int)
+                +1 shades [0, duration] (onset-aligned), -1 shades [-duration, 0].
+            title, xlabel, row_label (str)
+                Panel title, x label and the raster's y label.
+
+            Returns
+            -------
+            None
+            """
+
+            ax_raster = fig.add_subplot(spec)
+            rows = block["rows"]
+            n_rows = len(rows)
+            durations = np.asarray(block["durations"], dtype=float)
+            y_of_row = np.empty(n_rows, dtype=float)
+            y_of_row[order] = np.arange(n_rows)[::-1]
+            lefts = np.zeros(n_rows) if shade_sign > 0 else -durations
+            ax_raster.barh(y=y_of_row, width=durations, left=lefts, height=1.0, color=sound_color, alpha=0.25,
+                           linewidth=0, rasterized=True)
+            xs = np.concatenate([np.asarray(row, dtype=float) for row in rows]) if rows else np.empty(0)
+            ys = np.concatenate([np.full(len(row), y_of_row[i]) for i, row in enumerate(rows)]) if rows else np.empty(0)
+            ax_raster.scatter(xs, ys, s=6.0, marker="|", color=dash, linewidths=0.5, rasterized=True)
+            ax_raster.axvline(0.0, color=ink, linewidth=0.8, linestyle="--")
+            ax_raster.set_xlim(block["window"])
+            ax_raster.set_ylim(-0.5, n_rows - 0.5)
+            # Row 1 sits at the top: label the first and the last row only.
+            ax_raster.set_yticks([n_rows - 1, 0], ["1", f"{n_rows}"])
+            ax_raster.set_ylabel(row_label, fontsize=11, labelpad=2)
+            ax_raster.set_xlabel(xlabel, fontsize=11)
+            ax_raster.set_title(title, fontsize=12, fontweight="light")
+            ax_raster.tick_params(labelsize=tick_size)
+            # The mean rate and its SEM, smoothed alike, on a right axis spanning
+            # their own range (not forced to start at 0).
+            ax_rate = ax_raster.twinx()
+            smoothed = ndimage.gaussian_filter1d(np.asarray(block["rate_mean"], dtype=float), smooth_bins, mode="nearest")
+            smoothed_sem = ndimage.gaussian_filter1d(np.nan_to_num(np.asarray(block["rate_sem"], dtype=float)), smooth_bins, mode="nearest")
+            ax_rate.fill_between(block["bin_centers"], smoothed - smoothed_sem, smoothed + smoothed_sem,
+                                 color=rate_color, alpha=0.2, linewidth=0)
+            ax_rate.plot(block["bin_centers"], smoothed, color=rate_color, linewidth=2.0)
+            low, high = float(np.nanmin(smoothed - smoothed_sem)), float(np.nanmax(smoothed + smoothed_sem))
+            margin = 0.1 * (high - low) if high > low else 1.0
+            ax_rate.set_ylim(low - margin, high + margin)
+            ax_rate.set_ylabel("firing rate (sp/s)", fontsize=11)
+            ax_rate.tick_params(labelsize=tick_size)
+
+        bout_order = np.arange(len(playback["bout_onset"]["rows"]))
+        raster_with_rate(top[0], playback["bout_onset"], bout_order, 1, "(a) Bout onset", "time from bout onset (s)", "Bout #")
+        raster_with_rate(top[1], playback["bout_offset"], bout_order, -1, "(b) Bout offset", "time from bout offset (s)", "Bout #")
+        position = np.asarray(playback["usv_onset"]["position_in_bout"])
+        usv_order = np.lexsort((np.arange(position.size), position))
+        raster_with_rate(top[2], playback["usv_onset"], usv_order, 1, "(c) USV onset (first in bout at top)",
+                         "time from USV onset (s)", "USV #")
+
+        peri_onset = playback["peri_onset"]
+        ax_bars = fig.add_subplot(bottom[0])
+        bar_names = ["baseline", *[name for name in peri_onset if name != "baseline"]]
+        bar_means = [peri_onset[name]["mean"] for name in bar_names]
+        bar_sems = [peri_onset[name]["sem"] for name in bar_names]
+        bar_colors = ["#000000"] + [sound_color] * (len(bar_names) - 1)
+        positions = np.arange(len(bar_names))
+        ax_bars.bar(positions, bar_means, width=0.65, color=bar_colors, edgecolor=ink, linewidth=0.6)
+        ax_bars.errorbar(positions, bar_means, yerr=bar_sems, fmt="none", ecolor=ink, elinewidth=1.4, capsize=0)
+        tick_labels = []
+        for name in bar_names:
+            seconds = peri_onset[name]["seconds"]
+            span = (f"{seconds[0]:g} to {seconds[1]:g} s" if name == "baseline"
+                    else f"{seconds[0] * 1e3:+.0f} to {seconds[1] * 1e3:+.0f} ms")
+            tick_labels.append(f"{name}\n{span}\nn = {peri_onset[name]['n']}")
+        ax_bars.set_xticks(positions, tick_labels)
+        ax_bars.tick_params(labelsize=tick_size)
+        ax_bars.tick_params(axis="x", labelsize=9, length=0)
+        ax_bars.set_ylabel("firing rate (sp/s)", fontsize=11)
+        ax_bars.set_title("(d) Baseline and peri-onset firing", fontsize=12, fontweight="light")
+        for side in ("top", "right"):
+            ax_bars.spines[side].set_visible(False)
+
+        modulation = playback["modulation"]
+        ax_mod = fig.add_subplot(bottom[1])
+        silence = np.asarray(modulation["fr_silence_per_bout"], dtype=float)
+        sound = np.asarray(modulation["fr_sound_per_bout"], dtype=float)
+        ax_mod.scatter(silence, sound, s=14, color=sound_color, edgecolors=ink, linewidths=0.4, alpha=0.8)
+        # One range for both axes, spanning the points (not forced to 0).
+        both = np.concatenate([silence, sound])
+        both = both[np.isfinite(both)]
+        low, high = (float(both.min()), float(both.max())) if both.size else (0.0, 1.0)
+        margin = 0.05 * (high - low) if high > low else 1.0
+        low, high = low - margin, high + margin
+        ax_mod.plot([low, high], [low, high], color=dash, linewidth=0.8, linestyle="--")
+        ax_mod.set_xlim(low, high)
+        ax_mod.set_ylim(low, high)
+        ax_mod.set_aspect("equal")
+        ax_mod.set_xlabel("baseline firing rate (sp/s)", fontsize=11)
+        ax_mod.set_ylabel("firing rate in bout (sp/s)", fontsize=11)
+        ax_mod.tick_params(labelsize=tick_size)
+        ax_mod.set_title("(e) Playback modulation", fontsize=12, fontweight="light")
+        ax_mod.text(0.02, 0.98, f"modulation index {modulation['index']:+.3f}\nshift-null p = {modulation['p_two_sided']:.3f}\n"
+                                f"{playback['n_bouts_modulation']} of {playback['n_bouts']} bouts",
+                    transform=ax_mod.transAxes, fontsize=8, color=ink, va="top")
+
+        fig.suptitle(f"{cluster_id}  |  responses to played USVs ({playback['n_usvs']} USVs in {playback['n_bouts']} bouts)",
+                     fontsize=13)
+        save_fig(fig, "playback")
 
     def _render_vocal_pages(
         self,
@@ -6360,6 +6653,76 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 ax.add_patch(Rectangle((start, low), max(stop - start, min_width), high - low,
                                        facecolor=unassigned_color, edgecolor="none", zorder=4))
 
+    def _draw_usv_category_row(self, ax, emitter: str, usv_summary_df, low: float, high: float) -> None:
+        """
+        Description
+        -----------
+        A row of USV bars under the bout row of the zoom panel: each of the
+        emitter's USVs coloured by its QLVM category (``qlvm_category``, colours
+        from ``qlvm_figures.category_colors``; a USV without a category, such as
+        a squeak, in ``dash_color``), and the USVs no emitter was credited with
+        in ``light_color``. A small legend to the right of the panel names the
+        colours by the categories' descriptions (simple, biphones, ...).
+
+        Parameters
+        ----------
+        ax (matplotlib axis)
+            The zoom panel.
+        emitter (str)
+            Emitter of this vocal page.
+        usv_summary_df (pls.DataFrame)
+            Noise-filtered USV summary.
+        low, high (float)
+            Vertical extent of the row, in data coordinates.
+
+        Returns
+        -------
+        None
+        """
+
+        page_settings = self.visualizations_parameter_dict["neuronal_tuning_figures"]
+        category_colors = self.visualizations_parameter_dict["qlvm_figures"]["category_colors"]
+        no_category_color = page_settings["dash_color"]
+        unassigned_color = page_settings["light_color"]
+        emitters = np.array([(e.strip() if e is not None else None)
+                             for e in usv_summary_df["emitter"].to_list()], dtype=object)
+        starts = usv_summary_df["start"].to_numpy()
+        stops = usv_summary_df["stop"].to_numpy()
+        if QLVM_CATEGORY_COLUMN in usv_summary_df.columns:
+            categories = np.array([np.nan if c is None else float(c) for c in usv_summary_df[QLVM_CATEGORY_COLUMN].to_list()])
+        else:
+            categories = np.full(starts.size, np.nan)
+        window_lo, window_hi = ax.get_xlim()
+        visible = (stops >= window_lo) & (starts <= window_hi)
+        used_categories = set()
+        drew_no_category = drew_unassigned = False
+        for index in np.flatnonzero(visible):
+            if emitters[index] is None:
+                face = unassigned_color
+                drew_unassigned = True
+            elif emitters[index] == emitter:
+                category = categories[index]
+                if np.isfinite(category) and 1 <= int(category) <= len(category_colors):
+                    face = category_colors[int(category) - 1]
+                    used_categories.add(int(category))
+                else:
+                    face = no_category_color
+                    drew_no_category = True
+            else:
+                continue
+            ax.add_patch(Rectangle((starts[index], low), max(stops[index] - starts[index], 0.01), high - low,
+                                   facecolor=face, edgecolor="none", zorder=4))
+        descriptions = self._load_segmentation()[QLVM_CATEGORY_COLUMN]["descriptions"]
+        handles = [Patch(facecolor=category_colors[c - 1], label=str(descriptions[c - 1])) for c in sorted(used_categories)]
+        if drew_no_category:
+            handles.append(Patch(facecolor=no_category_color, label="no category"))
+        if drew_unassigned:
+            handles.append(Patch(facecolor=unassigned_color, label="unassigned"))
+        if handles:
+            ax.legend(handles=handles, loc="lower left", bbox_to_anchor=(1.005, 0.0), ncol=1,
+                      fontsize=7, frameon=False, handlelength=1.0, handleheight=0.6, labelspacing=0.3,
+                      borderaxespad=0.0)
+
     @staticmethod
     def _draw_first_vs_later(ax, spike_times: np.ndarray, usv_starts: np.ndarray, runs: list,
                              cfg: dict, colour: str, bout_cfg: dict) -> None:
@@ -6395,8 +6758,11 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             (``bout_density_levels``, at most three, in any order; sorted ascending,
             the smallest share takes the first line style, and each contour and its
             legend entry share one style), plus the ink colour of the markers, identity line
-            and contours (``ink_color``) and the grey of the too-few-bouts note
-            (``dash_color``). More than three raises ``ValueError``.
+            and contours (``ink_color``) and the grey of the too-few-bouts and no-density
+            notes (``dash_color``). More than three raises ``ValueError``. When the bouts
+            have no 2D spread (all silent, or all on one line), the density cannot be
+            estimated: the points, identity line and mean diamond are still drawn, the
+            shading, contours and their legend are left out, and a note says so.
 
         Returns
         -------
@@ -6422,27 +6788,39 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         first, later = np.asarray(first), np.asarray(later)
         limit = max(first.max(), later.max()) * 1.08 + 0.5
 
-        grid_x, grid_y = np.mgrid[0:limit:complex(0, bout_cfg["bout_density_grid"]),
-                                  0:limit:complex(0, bout_cfg["bout_density_grid"])]
-        estimate = gaussian_kde(np.vstack([later, first]))
-        density = estimate(np.vstack([grid_x.ravel(), grid_y.ravel()])).reshape(grid_x.shape)
-        density = (density - density.min()) / (density.max() - density.min() + 1e-12)
         if len(bout_cfg["bout_density_levels"]) > len(BOUT_DENSITY_STYLES):
             msg = (f"neuronal_tuning_figures.bout_density_levels holds {len(bout_cfg['bout_density_levels'])} "
                    f"levels; at most {len(BOUT_DENSITY_STYLES)} (one per line style) can be drawn.")
             raise ValueError(msg)
-        # contour levels enclosing a stated share of the bouts, read off the sorted density;
-        # ONE pairing of (share, level, style), ascending in share, drives both the contours
-        # and the legend so each contour carries its own share's style
-        flat = np.sort(density.ravel())[::-1]
-        share = np.cumsum(flat) / flat.sum()
-        contour_styles = [(float(q), float(flat[np.searchsorted(share, q)]), style)
-                          for q, style in zip(sorted(bout_cfg["bout_density_levels"]), BOUT_DENSITY_STYLES, strict=False)]
 
-        ax.imshow(density.T,
-                  cmap=LinearSegmentedColormap.from_list("density", ["#FFFFFF", colour]),
-                  origin="lower", aspect="equal", extent=(0, limit, 0, limit),
-                  interpolation="bilinear", zorder=1)
+        grid_x, grid_y = np.mgrid[0:limit:complex(0, bout_cfg["bout_density_grid"]),
+                                  0:limit:complex(0, bout_cfg["bout_density_grid"])]
+        # a cloud with no 2D spread (every bout silent on both axes, or the points on one line)
+        # has a singular covariance and no density; the bouts are still drawn, the shading and
+        # contours are left out and the panel says why
+        try:
+            estimate = gaussian_kde(np.vstack([later, first]))
+        except np.linalg.LinAlgError:
+            estimate = None
+        contour_styles = []
+        if estimate is not None:
+            density = estimate(np.vstack([grid_x.ravel(), grid_y.ravel()])).reshape(grid_x.shape)
+            density = (density - density.min()) / (density.max() - density.min() + 1e-12)
+            # contour levels enclosing a stated share of the bouts, read off the sorted density;
+            # ONE pairing of (share, level, style), ascending in share, drives both the contours
+            # and the legend so each contour carries its own share's style
+            flat = np.sort(density.ravel())[::-1]
+            share = np.cumsum(flat) / flat.sum()
+            contour_styles = [(float(q), float(flat[np.searchsorted(share, q)]), style)
+                              for q, style in zip(sorted(bout_cfg["bout_density_levels"]), BOUT_DENSITY_STYLES, strict=False)]
+
+            ax.imshow(density.T,
+                      cmap=LinearSegmentedColormap.from_list("density", ["#FFFFFF", colour]),
+                      origin="lower", aspect="equal", extent=(0, limit, 0, limit),
+                      interpolation="bilinear", zorder=1)
+        else:
+            ax.text(0.03, 0.97, "no density: the bouts have no 2D spread", transform=ax.transAxes,
+                    ha="left", va="top", fontsize=7, color=bout_cfg["dash_color"])
         ax.scatter(later, first, s=16, facecolor=colour, edgecolor=bout_cfg["ink_color"], linewidth=0.3,
                    zorder=2)
         ax.plot([0, limit], [0, limit], color=bout_cfg["ink_color"], linewidth=1.0, zorder=3)
@@ -6454,8 +6832,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                     label=f"{100 * quantile:.0f}%")
         ax.scatter([later.mean()], [first.mean()], marker="D", s=46, facecolor="#FFFFFF",
                    edgecolor=bout_cfg["ink_color"], linewidth=0.8, zorder=5)
-        ax.legend(fontsize=6, frameon=False, loc="lower right", title="bouts enclosed",
-                  title_fontsize=6)
+        if contour_styles:
+            ax.legend(fontsize=6, frameon=False, loc="lower right", title="bouts enclosed",
+                      title_fontsize=6)
         ax.set_xlim(0, limit)
         ax.set_ylim(0, limit)
         ax.set_aspect("equal")
@@ -6557,15 +6936,23 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                      color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidth=0.9)
         zoom_top = float(zoom_trace.max()) * 1.22 + 1.0
         ax_zoom.set_xlim(*zoom)
-        ax_zoom.set_ylim(-0.20 * zoom_top, zoom_top)
-        self._draw_event_ribbon(ax_zoom, bout_lo, bout_hi, unassigned_lo, unassigned_hi, colour,
-                                -0.16 * zoom_top, -0.02 * zoom_top,
+        # Two rows under the trace: the bouts alone, and below them, a quarter as tall,
+        # every USV of this emitter coloured by its QLVM category together with the
+        # USVs no emitter was credited with.
+        bout_row = (-0.16 * zoom_top, -0.02 * zoom_top)
+        usv_row_height = 0.25 * (bout_row[1] - bout_row[0])
+        usv_row = (bout_row[0] - 0.02 * zoom_top - usv_row_height, bout_row[0] - 0.02 * zoom_top)
+        zoom_bottom = usv_row[0] - 0.02 * zoom_top
+        ax_zoom.set_ylim(zoom_bottom, zoom_top)
+        self._draw_event_ribbon(ax_zoom, bout_lo, bout_hi, np.empty(0), np.empty(0), colour,
+                                bout_row[0], bout_row[1],
                                 unassigned_color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["light_color"])
+        self._draw_usv_category_row(ax_zoom, emitter, usv_summary_df, usv_row[0], usv_row[1])
         in_zoom = spikes[(spikes >= zoom[0]) & (spikes <= zoom[1])]
         ax_zoom.eventplot(in_zoom, lineoffsets=0.92 * zoom_top, linelengths=0.14 * zoom_top,
                           colors=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidths=0.35)
         ax_zoom.set_yticks([t for t in ax_zoom.get_yticks() if t >= 0])
-        ax_zoom.set_ylim(-0.20 * zoom_top, zoom_top)
+        ax_zoom.set_ylim(zoom_bottom, zoom_top)
         ax_zoom.set_ylabel("firing rate (sp/s)", fontsize=8)
         ax_zoom.set_xlabel("time in session (s)", fontsize=8)
         whole = int(np.sum((bout_lo >= zoom[0]) & (bout_hi <= zoom[1])))

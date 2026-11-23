@@ -412,19 +412,19 @@ def resolve_temporal_basis(model_block: dict, history_frames: int) -> tuple[np.n
       read against their permuted null.
       The torus model's ``l2_lag_alpha = 10`` comes from
       a follow-up on the window's far edge: with a uniform L2 the torus filters still
-      rose at -4 s (inter-partner distance 1.04 vs a permuted 95th percentile of 0.67,
+      rose at -4 s (self-partner distance 1.04 vs a permuted 95th percentile of 0.67,
       x1e-3), and neither a clamped basis nor a 1000x stronger smoothness changed it,
       while the lag-varying ridge at alpha 10 brought the far-edge weight of head pitch
       and neck elevation to their permuted level (0.22 / 0.26 and 0.15 / 0.17), kept
       the planted-shape recovery (r >= 0.87, a bump at -3 s included) and the onset
-      rise, and cost ~0 cross-validated gain except for inter-partner distance (-7 %),
+      rise, and cost ~0 cross-validated gain except for self-partner distance (-7 %),
       whose oldest frames carry real information (history cut off by the window).
       The multinomial model's ``l2_reg_fixed = 1e-5`` with ``l2_lag_alpha = 100`` comes
       from the same test: its unpenalised spline put a no-signal spike at -4 s
-      (inter-partner distance 15.1 vs an onset peak of 22.1, x1e-3); this setting cuts it
+      (self-partner distance 15.1 vs an onset peak of 22.1, x1e-3); this setting cuts it
       to 0.76 vs 8.8, costs at most 4 % of the cross-validated macro-AUC and keeps the
       planted-shape recovery at r >= 0.89 (a bump at -3 s 0.91). The history window
-      stays at 4 s: with an 8 s re-extraction inter-partner distance and head pitch
+      stays at 4 s: with an 8 s re-extraction self-partner distance and head pitch
       predict ~40 % better (the residual far-edge weight is history before the window,
       with no edge rise in the longer window) while neck elevation, which acts in the
       last second, loses 14 %.

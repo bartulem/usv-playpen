@@ -112,6 +112,10 @@
     "light_color": "#CCCCCC",
     "hatch_color": "#BBBBBB",
     "vocal_page_figsize_inches": [16.0, 27.0],
+    "playback_page_figsize_inches": [16.0, 10.0],
+    "playback_sound_color": "#E69F00",
+    "playback_rate_color": "#000000",
+    "playback_rate_smooth_bins": 2.0,
     "behavioral_page_width_inches": 16.0,
     "behavioral_row_height_inches": 2.6,
     "region_grid_figsize_inches": [14.0, 6.4],
@@ -404,7 +408,7 @@
       "/mnt/falkner/Bartul/spectrograms/qlvm/seeds/seed1234"
     ],
     "watershed_levels_file": "/mnt/falkner/Bartul/spectrograms/qlvm/watershed_levels.npz",
-    "category_colors": ["#4E79A7", "#F28E2B", "#59A14F", "#E15759"],
+    "category_colors": ["#BBEBF1", "#5CB8C4", "#008591", "#00515A"],
     "overview": {
       "n_examples": 10,
       "spiral_radius": 0.03,
@@ -935,7 +939,12 @@
     "tile_orientation": "vertical",
     "apply_mask": true,
     "mask_excluded_categories": [],
-    "category_colors": null,
+    "category_colors": {
+      "1": "#BBEBF1",
+      "2": "#5CB8C4",
+      "3": "#008591",
+      "4": "#00515A"
+    },
     "sampling_method": "spiral",
     "draw_cluster_boundaries": true,
     "draw_spiral_overlay": false,

@@ -1385,7 +1385,7 @@ class TestKinematicPanels:
         encoding["selected_per_fold"][0] = ["head-head"]
         figure, axis = plt.subplots()
         draw_fold_selection_grid(axis, encoding, False)
-        assert [label.get_text() for label in axis.get_yticklabels()] == ["inter-partner distance", "male speed"]
+        assert [label.get_text() for label in axis.get_yticklabels()] == ["self-partner distance", "male speed"]
         assert axis.get_xticklabels()[2].get_fontweight() == "bold"
         assert axis.get_title(loc="left").startswith("selected per fold")
         assert len(axis.collections) == 5
@@ -1423,7 +1423,7 @@ class TestKinematicPanels:
         figure, axis = plt.subplots()
         draw_selection(axis, path, selection_fold_scores(path))
         labels = axis.get_yticklabels()
-        assert [label.get_text() for label in labels] == ["+inter-partner distance", "+male speed", "+female speed"]
+        assert [label.get_text() for label in labels] == ["+self-partner distance", "+male speed", "+female speed"]
         assert labels[-1].get_style() == "italic"
         assert any("(ns)" in text.get_text() for text in axis.texts)
         assert axis.get_title(loc="left") == "forward selection (2 inner folds)"
@@ -1465,7 +1465,7 @@ class TestGatingPanels:
         figure, axis = plt.subplots()
         draw_gating_verdict(axis, _gating_section())
         assert [label.get_text() for label in axis.get_yticklabels()] == [
-            "female speed", "male speed", "inter-partner distance"]
+            "female speed", "male speed", "self-partner distance"]
         interaction_bars = axis.patches[3:]
         assert [to_hex(bar.get_facecolor()) for bar in interaction_bars] == [
             GATE_BELOW_COLOR.lower(), GATE_BELOW_COLOR.lower(), GATE_SIGNIFICANT_COLOR.lower()]
@@ -1681,7 +1681,7 @@ class TestTracePanels:
         assert np.isfinite(rows[0]["ccc_250ms"])
         assert "window_A_start_min" in rows[0]
         assert rows[0]["features"] == "self.speed + head-head"
-        assert "male speed + inter-partner distance" in pages[0].axes[0].get_title(loc="left")
+        assert "male speed + self-partner distance" in pages[0].axes[0].get_title(loc="left")
 
 
 class TestPages:

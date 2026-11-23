@@ -60,16 +60,17 @@ from matplotlib.collections import LineCollection
 from matplotlib.colors import ListedColormap, Normalize
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch, Rectangle
+from matplotlib.ticker import MaxNLocator
 from matplotlib.transforms import offset_copy
 from scipy import stats
 from scipy.interpolate import interp1d
 from scipy.ndimage import gaussian_filter1d
-from scipy.stats import gaussian_kde
+from scipy.stats import gaussian_kde, spearmanr
 from sklearn.cluster import KMeans
-from sklearn.metrics import confusion_matrix, roc_auc_score
+from sklearn.metrics import balanced_accuracy_score, confusion_matrix, roc_auc_score
 
 from ..analyses.compute_behavioral_features import FeatureZoo
-from ..modeling.manifold_metric import pairwise_distance
+from ..modeling.manifold_metric import macro_region_mean, pairwise_distance
 from ..modeling.modeling_metadata import RESERVED_METADATA_KEYS, load_selection_results
 from ..modeling.modeling_utils import manifold_tag_segment
 from ..os_utils import (
@@ -474,7 +475,7 @@ def plot_feature_ranking(
         ax.set_xticklabels([feature_pretty(str(name)) for name in feats_sorted], rotation=60, ha='right',
                            fontsize=6, color=TEXT_COLOR)
 
-        ax.set_ylabel(f'{metric_label} (held-out)', fontsize=12, color=TEXT_COLOR)
+        ax.set_ylabel(f'{metric_label} (validation data)', fontsize=12, color=TEXT_COLOR)
         ax.tick_params(axis='both', colors=TEXT_COLOR)
         ax.minorticks_off()
 
@@ -1357,33 +1358,9 @@ def _univariate_feature_pretty(modeling_data: dict):
     return _make_feature_pretty(None, metadata)
 
 
-# Short metric names for panel titles, e.g. "inter-partner distance (LL: 0.584)".
+# Short metric names for panel titles, e.g. "self-partner distance (LL: 0.584)".
 _METRIC_SHORT_NAMES = {"ll": "LL", "auc": "AUC", "score": "BA", "explained_deviance": "D²", "d2": "D²",
                        "spearman_r": "ρ", "pearson_r": "r"}
-
-
-def _step_test_p_adjusted(step: dict) -> float:
-    """
-    Description
-    -----------
-    The Bonferroni-corrected p-value of a step's per-step shift test
-    (``step['step_test']['p_adjusted']``), or NaN for a step pickle without a test
-    record (a run under an earlier acceptance rule, or a step that had no testable
-    winner).
-
-    Parameters
-    ----------
-    step : dict
-        One selection step pickle.
-
-    Returns
-    -------
-    float
-        ``p_adjusted`` or ``nan``.
-    """
-    if 'step_test' not in step or step['step_test'] is None or 'p_adjusted' not in step['step_test']:
-        return float('nan')
-    return float(step['step_test']['p_adjusted'])
 
 
 def _step_test_winner(step: dict, candidates: dict) -> str | None:
@@ -1422,28 +1399,585 @@ def _step_test_winner(step: dict, candidates: dict) -> str | None:
     return str(winner)
 
 
-def _label_with_p(label: str, p_adjusted: float) -> str:
+#: Physical sizes (inches) of the model-selection summary figures, shared by the
+#: binary, multinomial and manifold plotters: a step row is equally thick and a step
+#: column of a fold-scatter panel equally wide whatever the number of steps.
+_SELECTION_ROW_INCHES = 0.42
+_SELECTION_MIN_AXES_HEIGHT = 2.3
+_SELECTION_TRAJ_WIDTH = 6.6
+_SELECTION_STEP_COLUMN_WIDTH = 0.22
+_SELECTION_PANEL_GAP = 0.75
+_SELECTION_STEP_LABEL = "Model selection step #"
+_SELECTION_STEP_LABEL_INCHES = 1.4
+_REJECTED_STEP_TEXT_COLOR = '#A8A8A8'
+
+
+def _lighten_hex(hex_color: str, factor: float = 0.65) -> str:
     """
-    Description
-    -----------
-    Appends the step test's adjusted p-value to a trajectory tick label when it is
-    finite (``"+feature  p=0.0067"``), leaves the label alone otherwise.
+    Linearly interpolate a hex colour toward white.
 
     Parameters
     ----------
-    label : str
-        The feature label.
-    p_adjusted : float
-        ``p_adjusted`` of the step, or NaN.
+    hex_color : str
+        ``#RRGGBB`` source colour.
+    factor : float, default 0.65
+        0.0 returns the source colour unchanged; 1.0 returns white. The
+        model-selection summaries use 0.65 for the "previous cumulative" shade
+        of a step's bar.
 
     Returns
     -------
     str
-        The annotated label.
+        The lightened colour as a lowercase ``#rrggbb`` string.
     """
-    if not np.isfinite(p_adjusted):
-        return label
-    return f"{label}  p={p_adjusted:.3g}"
+
+    h = hex_color.lstrip('#')
+    r = int(h[0:2], 16)
+    g = int(h[2:4], 16)
+    b = int(h[4:6], 16)
+    r = round(r + (255 - r) * factor)
+    g = round(g + (255 - g) * factor)
+    b = round(b + (255 - b) * factor)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _selection_summary_figure(n_accepted: int, has_rejection: bool,
+                              n_scatter_panels: int) -> tuple:
+    """
+    Create a model-selection summary figure: the step trajectory on the left
+    and ``n_scatter_panels`` per-fold scatter panels to its right, laid out in
+    inches.
+
+    The trajectory panel is exactly as tall as its rows (one per accepted step,
+    plus the rejected step below a gap) and ``_SELECTION_TRAJ_WIDTH`` wide; each
+    scatter panel is ``_SELECTION_STEP_COLUMN_WIDTH`` per accepted step (plus
+    0.3 in) wide and at least ``_SELECTION_MIN_AXES_HEIGHT`` tall. When the
+    scatter panels are taller than the trajectory, the trajectory is centred
+    vertically beside them by ``_finish_selection_summary_layout``.
+
+    Parameters
+    ----------
+    n_accepted : int
+        Number of accepted steps (trajectory rows and scatter columns).
+    has_rejection : bool
+        Whether a rejected final step is drawn below the accepted rows.
+    n_scatter_panels : int
+        Number of per-fold scatter panels to the right of the trajectory.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        The figure.
+    ax_traj : matplotlib.axes.Axes
+        The trajectory panel.
+    scatter_axes : list of matplotlib.axes.Axes
+        The scatter panels, left to right.
+    layout : dict
+        Sizes the drawing helpers and ``_finish_selection_summary_layout``
+        read: ``traj_y_limits`` (the trajectory's inverted y-limits),
+        ``traj_height``, ``axes_height``, ``fig_width``, ``fig_height`` and
+        the margins and panel widths in inches.
+    """
+
+    last_row_y = (n_accepted + 0.4) if has_rejection else (n_accepted - 1)
+    row_span = last_row_y + 1.2
+    traj_height = row_span * _SELECTION_ROW_INCHES
+    axes_height = max(traj_height, _SELECTION_MIN_AXES_HEIGHT)
+    scatter_width = _SELECTION_STEP_COLUMN_WIDTH * n_accepted + 0.3
+    widths = [_SELECTION_TRAJ_WIDTH] + [scatter_width] * n_scatter_panels
+    margin_left, margin_top, margin_bottom = 0.6, 0.25, 0.6
+    # A step label (~1.4 in at 9 pt) is wider than a scatter panel of one or two
+    # steps; the right margin makes room for the last panel's overhang.
+    margin_right = max(0.15, (_SELECTION_STEP_LABEL_INCHES - scatter_width) / 2.0 + 0.1)
+    fig_width = margin_left + sum(widths) + _SELECTION_PANEL_GAP * n_scatter_panels + margin_right
+    fig_height = margin_bottom + axes_height + margin_top
+    fig, axes = plt.subplots(nrows=1, ncols=1 + n_scatter_panels,
+                             figsize=(fig_width, fig_height), dpi=_FIGURE_DPI,
+                             gridspec_kw={'width_ratios': widths})
+    axes = list(np.atleast_1d(axes))
+    fig.patch.set_facecolor('#FFFFFF')
+    for ax in axes:
+        ax.set_facecolor('#FFFFFF')
+    layout = {
+        'traj_y_limits': (last_row_y + 0.6, -0.6),
+        'traj_height': traj_height,
+        'axes_height': axes_height,
+        'fig_width': fig_width,
+        'fig_height': fig_height,
+        'margin_left': margin_left,
+        'margin_right': margin_right,
+        'margin_top': margin_top,
+        'margin_bottom': margin_bottom,
+        'mean_width': sum(widths) / len(widths),
+    }
+    return fig, axes[0], axes[1:], layout
+
+
+def _finish_selection_summary_layout(fig: plt.Figure, ax_traj, layout: dict) -> None:
+    """
+    Apply the inch margins of ``_selection_summary_figure`` and centre the
+    trajectory panel vertically when the scatter panels are taller.
+
+    Parameters
+    ----------
+    fig : matplotlib.figure.Figure
+        The summary figure.
+    ax_traj : matplotlib.axes.Axes
+        Its trajectory panel.
+    layout : dict
+        The ``layout`` returned by ``_selection_summary_figure``.
+
+    Returns
+    -------
+    None
+    """
+
+    fig.subplots_adjust(left=layout['margin_left'] / layout['fig_width'],
+                        right=1.0 - layout['margin_right'] / layout['fig_width'],
+                        top=1.0 - layout['margin_top'] / layout['fig_height'],
+                        bottom=layout['margin_bottom'] / layout['fig_height'],
+                        wspace=_SELECTION_PANEL_GAP / layout['mean_width'])
+    if layout['traj_height'] < layout['axes_height']:
+        box = ax_traj.get_position()
+        box_height = layout['traj_height'] / layout['fig_height']
+        ax_traj.set_position([box.x0, box.y0 + (box.height - box_height) / 2.0,
+                              box.width, box_height])
+
+
+def _draw_selection_trajectory(ax, *, features: list, values: list, chance: float,
+                               is_minimization: bool, category_color: Callable,
+                               pretty: Callable, xlabel: str, y_limits: tuple,
+                               rejected_feature: str | None = None,
+                               rejected_value: float = float('nan')) -> None:
+    """
+    Draw the step trajectory of a model-selection summary.
+
+    One horizontal bar per accepted step, top to bottom, on a "Model selection
+    step #" axis numbered from 1. Each bar starts at the chance baseline (with a
+    1% margin from the y-axis) and is split into a light segment (the previous
+    cumulative value) and a dark tip (this step's change), coloured by the added
+    feature's category. The feature's name and the step's change,
+    "name (Δ +0.012)", are written inside the bar, starting just past the
+    chance end, in white on a dark fill (the first bar has no light segment, so
+    its text sits on the category colour itself) and in the text colour
+    otherwise.
+    A rejected final step is drawn grey below a thin separator, with its text in
+    a light grey, and takes the next step number. For a minimised metric the
+    x-axis is inverted so better is always to the right.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Target axis.
+    features : list of str
+        Raw names of the features added at the accepted steps, in order.
+    values : list of float
+        The model's cumulative metric after each accepted step.
+    chance : float
+        The baseline the first bar starts from.
+    is_minimization : bool
+        True when lower values are better.
+    category_color : Callable
+        ``feature -> hex colour`` (self / other / dyadic palette).
+    pretty : Callable
+        ``feature -> display label``.
+    xlabel : str
+        The x-axis label.
+    y_limits : tuple of float
+        The axis's inverted y-limits (``layout['traj_y_limits']``).
+    rejected_feature : str, optional
+        Raw name of the feature the rejected step's test turned down.
+    rejected_value : float, default NaN
+        The metric with that feature added; its bar and text are drawn only
+        when finite (the step number is drawn whenever ``rejected_feature`` is
+        given).
+
+    Returns
+    -------
+    None
+    """
+
+    bar_height = 0.88
+    ends = list(values)
+    has_rejected_bar = rejected_feature is not None and np.isfinite(rejected_value)
+    if has_rejected_bar:
+        ends.append(rejected_value)
+    span = max(abs(v - chance) for v in ends) or 1.0
+    # Offset of the in-bar text from the chance end, toward the bar.
+    inside_pad = (-0.012 if is_minimization else 0.012) * span
+
+    def _bar(y: float, prev_value: float, cur_value: float, light: str, dark: str) -> None:
+        """
+        Draw one row: a light segment from chance to the previous value and a
+        dark tip from the previous to the current value.
+
+        Parameters
+        ----------
+        y : float
+            Row position.
+        prev_value : float
+            The cumulative value before this step.
+        cur_value : float
+            The cumulative value after it.
+        light : str
+            Hex colour of the light segment.
+        dark : str
+            Hex colour of the dark tip.
+
+        Returns
+        -------
+        None
+        """
+
+        light_left, light_width = min(chance, prev_value), abs(prev_value - chance)
+        dark_left, dark_width = min(prev_value, cur_value), abs(cur_value - prev_value)
+        if light_width > 0:
+            ax.barh(y, light_width, left=light_left, height=bar_height, color=light, edgecolor='none')
+        if dark_width > 0:
+            ax.barh(y, dark_width, left=dark_left, height=bar_height, color=dark, edgecolor='none')
+
+    def _text_color_on(hex_color: str) -> str:
+        """
+        Pick white or the text colour for text drawn on a fill.
+
+        Parameters
+        ----------
+        hex_color : str
+            ``#RRGGBB`` fill colour.
+
+        Returns
+        -------
+        str
+            ``'#FFFFFF'`` on a dark fill (relative luminance below 0.4),
+            ``TEXT_COLOR`` otherwise.
+        """
+
+        h = hex_color.lstrip('#')
+        r, g, b = (int(h[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+        return '#FFFFFF' if (0.2126 * r + 0.7152 * g + 0.0722 * b) < 0.4 else TEXT_COLOR
+
+    for row_idx, (feature, cur_value) in enumerate(zip(features, values, strict=True)):
+        base_color = category_color(feature)
+        prev_value = values[row_idx - 1] if row_idx > 0 else chance
+        _bar(row_idx, prev_value, cur_value, _lighten_hex(base_color), base_color)
+        # The text sits at the chance end: on the light segment, or on the dark
+        # tip for the first step (which has no light segment).
+        ax.text(chance + inside_pad, row_idx, f"{pretty(feature)}  (Δ {cur_value - prev_value:+.3f})",
+                ha='left', va='center', fontsize=9,
+                color=_text_color_on(base_color if row_idx == 0 else _lighten_hex(base_color)))
+
+    tick_positions = list(range(len(features)))
+    tick_labels = [str(k + 1) for k in range(len(features))]
+    if rejected_feature is not None:
+        rej_y = len(features) + 0.4
+        if has_rejected_bar:
+            _bar(rej_y, values[-1], rejected_value, '#D7D7D7', '#9A9A9A')
+            ax.text(chance + inside_pad, rej_y,
+                    f"{pretty(rejected_feature)}  (Δ {rejected_value - values[-1]:+.3f})",
+                    ha='left', va='center', fontsize=9, color=_REJECTED_STEP_TEXT_COLOR, style='italic')
+        tick_positions.append(rej_y)
+        tick_labels.append(str(len(features) + 1))
+        ax.axhline(len(features) - 0.4, color=NEUTRAL_COLOR, linestyle='-', lw=0.4, alpha=0.5, zorder=0)
+
+    ax.set_yticks(tick_positions)
+    ax.set_yticklabels(tick_labels, fontsize=9, color=TEXT_COLOR)
+    ax.set_ylabel(_SELECTION_STEP_LABEL, fontsize=9, color=TEXT_COLOR)
+    ax.tick_params(axis='y', length=0)
+    ax.set_ylim(*y_limits)
+
+    if is_minimization:
+        ax.set_xlim(min(ends) - 0.08 * span, chance + 0.01 * span)
+        ax.invert_xaxis()
+    else:
+        ax.set_xlim(chance - 0.01 * span, max(ends) + 0.08 * span)
+    ax.set_xlabel(xlabel, fontsize=9, color=TEXT_COLOR)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.tick_params(axis='both', colors=TEXT_COLOR, labelsize=8)
+    for spine in ax.spines.values():
+        spine.set_edgecolor(TEXT_COLOR)
+
+
+def _draw_step_fold_scatter(ax, *, fold_values: list, colors: list, chance: float,
+                            ylabel: str, tick_step: float | None = None,
+                            y_top_at_least: float | None = None,
+                            test_values: np.ndarray | None = None,
+                            test_pooled: float | None = None) -> None:
+    """
+    Draw one per-fold scatter panel of a model-selection summary.
+
+    At each accepted step (x = 1, 2, ...), the metric's value in every
+    cross-validation fold is a black-edged dot in the colour of the feature that
+    step added, with a fixed-seed horizontal jitter; a thick horizontal line
+    marks the across-fold mean and a thin vertical line spans +/- 1 SEM. The
+    y-axis starts at ``chance`` (or, when a fold falls below it, at the tick
+    below the lowest fold) and ends at the first tick above the highest fold
+    (one more when a fold is within a fifth of a step of either edge);
+    ticks sit on multiples of the tick step. The step numbers carry no tick
+    marks, and the "Model selection step #" label is drawn as text a fixed
+    distance under the axis (as an axis label, its overhang past a narrow panel
+    would be cropped by a tight save).
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Target axis.
+    fold_values : list of array-like
+        Per accepted step, the metric's value in each fold; non-finite values
+        are skipped.
+    colors : list of str
+        Per accepted step, the hex colour of the feature it added.
+    chance : float
+        The metric's chance level (the y-axis floor).
+    ylabel : str
+        The y-axis label.
+    tick_step : float, optional
+        Spacing of the y ticks. ``None`` picks a round spacing for the data
+        range (about six ticks).
+    y_top_at_least : float, optional
+        Lowest allowed top of the y-axis; the axis still ends above the highest
+        fold when that is higher.
+    test_values : np.ndarray, optional
+        Per test session, the final model's score on that session (the sessions
+        reserved before screening and selection), drawn as one open circle per
+        session on the "test" item. None draws the pooled bar alone (used when a
+        per-session score is not comparable to the steps, e.g. a manifold error
+        relative to the cohort baseline).
+    test_pooled : float, optional
+        The final model's score on all test events pooled (the number the
+        selection stored as its test-set score). When given, a "test" item is
+        drawn after the last step, past a short break in the x-axis, as a thick
+        bar at this score. No variability is drawn on it: the pooled score is
+        one number.
+
+    Returns
+    -------
+    None
+    """
+
+    jitter_rng = np.random.default_rng(0)
+    all_values = []
+    for step_idx, (step_values, color) in enumerate(zip(fold_values, colors, strict=True)):
+        x_step = step_idx + 1
+        values = np.asarray(step_values, dtype=float)
+        values = values[np.isfinite(values)]
+        if values.size == 0:
+            continue
+        all_values.extend(values.tolist())
+        jitter = jitter_rng.uniform(-0.18, 0.18, size=values.size)
+        ax.scatter(x_step + jitter, values, s=20, color=color,
+                   edgecolors='#000000', linewidths=0.5, alpha=0.8, zorder=2)
+        mean = float(np.mean(values))
+        sem = float(np.std(values, ddof=1) / np.sqrt(values.size)) if values.size > 1 else 0.0
+        ax.plot([x_step, x_step], [mean - sem, mean + sem], color=TEXT_COLOR, lw=1.0,
+                solid_capstyle='butt', zorder=3)
+        ax.plot([x_step - 0.28, x_step + 0.28], [mean, mean], color=TEXT_COLOR, lw=2.2,
+                solid_capstyle='butt', zorder=3)
+
+    has_test = test_pooled is not None
+    n_steps = len(fold_values)
+    # The test item sits one step past a break in the x-axis.
+    x_test = n_steps + 1.6
+    if has_test:
+        test_finite = np.asarray(test_values if test_values is not None else [], dtype=float)
+        test_finite = test_finite[np.isfinite(test_finite)]
+        test_jitter = np.random.default_rng(0).uniform(-0.18, 0.18, size=test_finite.size)
+        ax.scatter(x_test + test_jitter, test_finite, s=20, facecolors='#FFFFFF',
+                   edgecolors='#000000', linewidths=0.8, zorder=2)
+        ax.plot([x_test - 0.28, x_test + 0.28], [test_pooled, test_pooled], color=TEXT_COLOR, lw=2.2,
+                solid_capstyle='butt', zorder=3)
+        all_values.extend(test_finite.tolist())
+        all_values.append(float(test_pooled))
+
+    y_max = max(all_values) if all_values else chance + 1.0
+    y_min = min(all_values) if all_values else chance
+    if tick_step is None:
+        tick_values = MaxNLocator(nbins=6, steps=[1, 2, 2.5, 5, 10]).tick_values(min(chance, y_min), y_max)
+        tick_step = float(tick_values[1] - tick_values[0])
+    y_top = tick_step * (np.floor(y_max / tick_step + 1e-9) + 1.0)
+    # A fold within a fifth of a step of the top would sit on the axis edge.
+    if y_top - y_max < 0.2 * tick_step:
+        y_top += tick_step
+    if y_top_at_least is not None:
+        y_top = max(y_top, float(y_top_at_least))
+    y_bottom = chance if y_min >= chance else tick_step * np.floor(y_min / tick_step - 1e-9)
+    if y_min < chance and y_min - y_bottom < 0.2 * tick_step:
+        y_bottom -= tick_step
+    ax.set_ylim(y_bottom, y_top)
+    # Fewest decimals that write the tick step exactly (0.05 -> 2, 0.025 -> 3, 1 -> 0);
+    # ticks are rounded to them (and + 0.0 turns a -0.0 into 0.0).
+    decimals = next(d for d in range(7) if abs(round(tick_step * 10 ** d) - tick_step * 10 ** d) < 1e-6)
+    ticks = np.round(np.arange(np.ceil(y_bottom / tick_step - 1e-9) * tick_step, y_top + 1e-9, tick_step),
+                     decimals) + 0.0
+    ax.set_yticks(ticks)
+    ax.set_yticklabels([f"{t:.{decimals}f}" for t in ticks], fontsize=8, color=TEXT_COLOR)
+    if has_test:
+        ax.set_xticks([*range(1, n_steps + 1), x_test])
+        ax.set_xticklabels([*(str(k) for k in range(1, n_steps + 1)), 'test'], fontsize=8, color=TEXT_COLOR)
+        ax.set_xlim(0.4, x_test + 0.6)
+    else:
+        ax.set_xticks(list(range(1, n_steps + 1)))
+        ax.set_xticklabels([str(k) for k in range(1, n_steps + 1)], fontsize=8, color=TEXT_COLOR)
+        ax.set_xlim(0.4, n_steps + 0.6)
+    # A fixed offset in points keeps it level with the trajectory's x-label. With a
+    # test item the label names only the steps, so it is centred under them (x in
+    # data units, y in axes units).
+    if has_test:
+        ax.annotate(_SELECTION_STEP_LABEL, xy=((1 + n_steps) / 2.0, 0.0),
+                    xycoords=mtransforms.blended_transform_factory(ax.transData, ax.transAxes),
+                    xytext=(0.0, -17.0), textcoords='offset points',
+                    ha='center', va='top', fontsize=9, color=TEXT_COLOR)
+    else:
+        ax.annotate(_SELECTION_STEP_LABEL, xy=(0.5, 0.0), xycoords='axes fraction',
+                    xytext=(0.0, -17.0), textcoords='offset points',
+                    ha='center', va='top', fontsize=9, color=TEXT_COLOR)
+    ax.set_ylabel(ylabel, fontsize=9, color=TEXT_COLOR)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.tick_params(axis='both', colors=TEXT_COLOR, labelsize=8)
+    # Step numbers without tick marks, as on the trajectory's step axis.
+    ax.tick_params(axis='x', length=0)
+    for spine in ax.spines.values():
+        spine.set_edgecolor(TEXT_COLOR)
+    if has_test:
+        # A short break in the x-axis separates the validation steps from the
+        # test item: the bottom spine is redrawn as two pieces.
+        x_break = n_steps + 0.8
+        ax.spines['bottom'].set_visible(False)
+        for x_from, x_to in ((0.4, x_break - 0.08), (x_break + 0.08, x_test + 0.6)):
+            ax.plot([x_from, x_to], [y_bottom, y_bottom], color=TEXT_COLOR,
+                    lw=ax.spines['left'].get_linewidth(), clip_on=False, zorder=4,
+                    solid_capstyle='butt')
+
+
+def _test_set_secondary_scores(heldout: dict, metric: str, decision_threshold: float,
+                               min_region_events: int | None = None) -> tuple | None:
+    """
+    Description
+    -----------
+    Scores the final model on the test set (the sessions reserved before screening
+    and selection), per session and pooled, from the per-event record a selection
+    stores with its test-set result. The pooled score is recomputed from the
+    per-event predictions and checked against the score the selection stored, so a
+    figure can never show a test number the run did not produce.
+
+    Supported metrics: ``'score'`` (balanced accuracy at ``decision_threshold``)
+    and ``'auc'`` from the stored probabilities (binary targets),
+    ``'spearman_r'`` from the stored predictions (bout parameters), and
+    ``'score'`` from the stored predicted classes (multinomial categories,
+    where it is the macro recall over the classes present), and
+    ``'euclidean_mae_macro'`` / ``'pullback_geodesic_mae_macro'`` from the
+    stored per-event errors (manifold position: the region-balanced mean of the
+    torus distance or of the pullback geodesic distance, averaged over the
+    acoustic regions with at least ``min_region_events`` events). A session is
+    scored only when the metric is defined on it: both classes present for
+    balanced accuracy and AUC, at least three events with varying target and
+    prediction for Spearman, at least one region at the event floor for the
+    manifold errors.
+
+    Parameters
+    ----------
+    heldout (dict)
+        The selection's ``heldout`` record; it must carry ``y_true`` and
+        ``session_ids``, and ``actual`` must carry ``y_prob`` (binary) or
+        ``y_pred`` (bout parameters); a multinomial record carries ``y_pred``
+        (classes) and ``metrics`` instead of ``actual``.
+    metric (str)
+        The secondary metric of the summary figure.
+    decision_threshold (float)
+        The probability at or above which an event is classified positive
+        (``diagnostics.binary_decision_threshold`` in the modeling settings).
+    min_region_events (int | None)
+        The region event floor of the manifold errors (the run's
+        ``usv_manifold_min_region_events``); used only by the manifold metrics,
+        which return None without it.
+
+    Returns
+    -------
+    test_scores (tuple | None)
+        ``(per_session, pooled)``: per test session the metric (sessions where
+        it is undefined are omitted) and the metric over all test events. None
+        when the record carries no per-event predictions (runs made before they
+        were stored) or the metric is not supported.
+    """
+
+    if 'y_true' not in heldout or 'session_ids' not in heldout:
+        return None
+    y_true = np.asarray(heldout['y_true'])
+    sessions = np.asarray(heldout['session_ids'])
+    # Tolerance of the check against the stored pooled score: exact up to float
+    # rounding, except the pullback geodesic error, whose geometry comes from a
+    # float32 decoder Jacobian and reproduces to ~1e-8 relative.
+    match_atol, match_rtol = 1e-9, 0.0
+
+    if metric in ('euclidean_mae_macro', 'pullback_geodesic_mae_macro'):
+        # Manifold record: per-event errors and acoustic-region labels beside the
+        # stored metrics.
+        if 'per_event_errors' not in heldout or 'region_labels' not in heldout or min_region_events is None:
+            return None
+        actual = heldout['metrics']
+        errors = np.asarray(heldout['per_event_errors'][
+            'euclidean_dist' if metric == 'euclidean_mae_macro' else 'pullback_geodesic_dist'], dtype=float)
+        regions = np.asarray(heldout['region_labels'], dtype=float)
+        if metric == 'pullback_geodesic_mae_macro':
+            match_atol, match_rtol = 0.0, 1e-6
+
+        def _score(mask):
+            return macro_region_mean(errors[mask], regions[mask], min_region_events=min_region_events)
+
+        def _defined(mask):
+            return np.isfinite(_score(mask))
+    elif 'metrics' in heldout and 'y_pred' in heldout:
+        # Multinomial record: predicted classes beside the stored metrics; only
+        # balanced accuracy (macro recall over the classes present) is supported.
+        if metric != 'score':
+            return None
+        actual = heldout['metrics']
+        y_pred_class = np.asarray(heldout['y_pred'])
+
+        def _score(mask):
+            return balanced_accuracy_score(y_true[mask], y_pred_class[mask])
+
+        def _defined(mask):
+            return np.unique(y_true[mask]).size >= 2
+    elif 'actual' not in heldout:
+        return None
+    elif metric in ('score', 'auc'):
+        actual = heldout['actual']
+        if 'y_prob' not in actual or actual['y_prob'] is None:
+            return None
+        y_prob = np.asarray(actual['y_prob'], dtype=float)
+        y_hat = (y_prob >= decision_threshold).astype(int)
+
+        def _score(mask):
+            if metric == 'score':
+                return balanced_accuracy_score(y_true[mask], y_hat[mask])
+            return roc_auc_score(y_true[mask], y_prob[mask])
+
+        def _defined(mask):
+            return np.unique(y_true[mask]).size == 2
+    elif metric == 'spearman_r':
+        actual = heldout['actual']
+        if 'y_pred' not in actual or actual['y_pred'] is None:
+            return None
+        y_pred = np.asarray(actual['y_pred'], dtype=float)
+
+        def _score(mask):
+            return float(spearmanr(y_true[mask], y_pred[mask]).statistic)
+
+        def _defined(mask):
+            return mask.sum() >= 3 and np.unique(y_true[mask]).size > 1 and np.unique(y_pred[mask]).size > 1
+    else:
+        return None
+
+    all_events = np.ones(y_true.shape[0], dtype=bool)
+    pooled = float(_score(all_events))
+    if metric in actual and np.isfinite(actual[metric]) and not np.isclose(pooled, actual[metric], rtol=match_rtol, atol=match_atol):
+        mismatch_message = (f"Test-set {metric} recomputed from the per-event record ({pooled:.12f}) does not match "
+                            f"the stored score ({actual[metric]:.12f}); the decision threshold or the record is wrong.")
+        raise ValueError(mismatch_message)
+    per_session = np.array([_score(sessions == s) for s in np.unique(sessions) if _defined(sessions == s)], dtype=float)
+    return per_session, pooled
 
 
 def plot_model_selection_results(
@@ -1465,23 +1999,38 @@ def plot_model_selection_results(
        * **Left panel** -- per-step horizontal bars showing the
          cumulative trajectory of the primary metric (Negative Log-
          Likelihood) one row per accepted step, top-to-bottom in
-         selection order. Each bar is split into a lighter base
-         (the previous cumulative NLL) and a darker tip (THIS step's
-         NLL reduction). Bars are coloured by the same
-         self / other / dyadic palette used in the filter grid. A
-         rejected final step, if any, is drawn below a thin
-         separator in desaturated grey.
-       * **Right panel** -- two vertical bars on a balanced-
-         classification axis (chance = 0.5):
-         best univariate single-feature model and final accepted
-         multivariate model. A rejected final step, if any, appears
-         as a grey row in the left panel, not as a right-panel bar.
-         The features composing each model are listed above the
-         corresponding bar.
+         selection order, on a "Model selection step #" axis numbered
+         from 1. Each
+         bar starts at the chance baseline (with only a small margin
+         from the y-axis) and is split into a lighter base (the
+         previous cumulative NLL) and a darker tip (THIS step's NLL
+         reduction). The added feature's name and the step's change
+         in the metric, "name (Δ -0.021)", are written inside the
+         bar. Bars are coloured by the same self / other / dyadic
+         palette used in the filter grid. A rejected final step, if
+         any, is drawn below a thin separator in desaturated grey,
+         with its text in a much lighter grey.
+       * **Right panel** -- the secondary metric (for onset, balanced
+         accuracy; chance = 0.5) of the model at each accepted step,
+         on a "Model selection step #" axis matching the left panel
+         (the rejected step is left out). Each cross-validation fold
+         is a black-edged dot in the colour of the feature that step
+         added, with a small horizontal jitter; a thick horizontal line marks the
+         across-fold mean and a thin vertical line spans +/- 1 SEM.
+         The y-axis runs from chance (lower when a fold falls below
+         chance) to the first 0.05 step above the highest fold.
 
     2. A grid of per-feature partial-dependence (filter) plots for
-       the final accepted model, one panel per feature, plotting
-       mean +/- SEM across CV folds.
+       the final accepted model, one panel per feature, plotting the
+       mean across CV folds with a 99% band (mean +/- 2.58 SEM). The
+       time axis spans the extraction's recorded history window
+       (``filter_history_seconds``) and ends at its anchor event: the
+       bout onset (bout onset and bout-duration selections), the bout
+       offset, or the onset of an individual squeak / USV.
+
+    Rows of the summary figure have a fixed physical height and each
+    step column of the right panel a fixed width, so a selection with
+    one step is drawn at the same scale as one with many.
 
     Parameters
     ----------
@@ -1661,7 +2210,6 @@ def plot_model_selection_results(
         steps_data.append({
             'step_idx': i,
             'feature_name': best_feat,
-            'p_adjusted': _step_test_p_adjusted(data),
             'prim_scores': np.array(winner_data[primary_metric]),
             'prim_mean': best_prim_mean,
             'sec_scores': _sec_raw,
@@ -1722,33 +2270,6 @@ def plot_model_selection_results(
             return self_color
         return other_color
 
-    def _lighten(hex_color: str, factor: float = 0.65) -> str:
-        """
-        Linearly interpolate a hex colour toward white.
-
-        Parameters
-        ----------
-        hex_color : str
-            ``#RRGGBB`` source colour.
-        factor : float
-            0.0 returns the source colour unchanged; 1.0 returns
-            white. Used to derive the "previous cumulative" shade
-            from a feature's category colour.
-
-        Returns
-        -------
-        str
-            The lightened colour as a lowercase ``#rrggbb`` string.
-        """
-
-        h = hex_color.lstrip('#')
-        r = int(h[0:2], 16)
-        g = int(h[2:4], 16)
-        b = int(h[4:6], 16)
-        r = round(r + (255 - r) * factor)
-        g = round(g + (255 - g) * factor)
-        b = round(b + (255 - b) * factor)
-        return f"#{r:02x}{g:02x}{b:02x}"
 
     _pretty = _make_feature_pretty(feature_label_overrides, selection_metadata)
 
@@ -1762,31 +2283,6 @@ def plot_model_selection_results(
     else:
         chance_nll = float(np.log(2.0))
     cum_nlls = [float(d['prim_mean']) for d in steps_data]
-
-    # Right-panel data: secondary-metric bars (chance_secondary + secondary_label
-    # were resolved above from the effective secondary metric).
-    first_step = valid_steps_for_plot[0]
-    if 'candidates_summary' in first_step:
-        first_cands_all = first_step['candidates_summary']
-    elif 'candidates' in first_step:
-        first_cands_all = first_step['candidates']
-    else:
-        first_cands_all = {}
-    best_univariate_value = np.nan
-    best_univariate_feat = None
-    for _f, _m in first_cands_all.items():
-        if metric_secondary not in _m:
-            continue
-        _v = np.array(_m[metric_secondary], dtype=float)
-        _v = _v[~np.isnan(_v)]
-        if _v.size == 0:
-            continue
-        _mu = float(np.mean(_v))
-        if np.isnan(best_univariate_value) or _mu > best_univariate_value:
-            best_univariate_value = _mu
-            best_univariate_feat = _f
-
-    final_score = float(steps_data[-1]['sec_mean'])
 
     # Rejected-final-step lookup (by secondary metric, so the rejected
     # bar in the right panel and the rejected row in the left panel
@@ -1835,200 +2331,47 @@ def plot_model_selection_results(
                     'll_mean': rej_ll_mean,
                 }
 
-    # Figure layout
-    n_rows_total = len(steps_data) + (1 if rejection_row is not None else 0)
-    fig_height = max(3.0, 0.32 * n_rows_total + 1.8)
-    fig_traj, (ax_traj, ax_bars) = plt.subplots(
-        nrows=1, ncols=2,
-        figsize=(10.5, fig_height), dpi=_FIGURE_DPI,
-        gridspec_kw={'width_ratios': [2.2, 1.0]},
+    # Summary figure: the step trajectory (left) and one per-fold scatter of the
+    # secondary metric per accepted step (right); see the shared helpers.
+    fig_traj, ax_traj, (ax_bars,), summary_layout = _selection_summary_figure(
+        n_accepted=len(steps_data), has_rejection=rejection_row is not None, n_scatter_panels=1)
+    _draw_selection_trajectory(
+        ax_traj,
+        features=[d['feature_name'] for d in steps_data],
+        values=cum_nlls,
+        chance=chance_nll,
+        is_minimization=is_minimization,
+        category_color=_category_color,
+        pretty=_pretty,
+        xlabel=f"{metric_label} (validation data)",
+        y_limits=summary_layout['traj_y_limits'],
+        rejected_feature=rejection_row['feature_name'] if rejection_row is not None else None,
+        rejected_value=rejection_row['ll_mean'] if rejection_row is not None else float('nan'),
     )
-    fig_traj.patch.set_facecolor(BG_COLOR)
-    ax_traj.set_facecolor(BG_COLOR)
-    ax_bars.set_facecolor(BG_COLOR)
-
-    # Left panel: NLL trajectory bars (grow leftward)
-    bar_height = 0.88
-    y_positions = list(range(len(steps_data)))
-    rej_y = len(steps_data) + 0.4 if rejection_row is not None else None
-
-    for row_idx, d in enumerate(steps_data):
-        y = y_positions[row_idx]
-        base_color = _category_color(d['feature_name'])
-        light_color = _lighten(base_color, factor=0.65)
-        prev_nll = cum_nlls[row_idx - 1] if row_idx > 0 else chance_nll
-        cur_nll = cum_nlls[row_idx]
-        # Signed change of the metric itself from the previous cumulative value:
-        # negative when a minimized metric (NLL) drops, positive when a maximized
-        # one (explained deviance) rises, so the printed sign matches the axis.
-        delta = cur_nll - prev_nll
-
-        # The bar spans from the chance baseline to this step's cumulative value,
-        # split at the previous value: a light segment for the improvement BEFORE
-        # this feature (chance -> prev) and a dark tip for THIS step (prev -> cur).
-        # Expressed as min-edge + width so it renders correctly whether the metric
-        # decreases (minimized) or increases (maximized) away from chance.
-        light_left, light_width = min(chance_nll, prev_nll), abs(prev_nll - chance_nll)
-        dark_left, dark_width = min(prev_nll, cur_nll), abs(cur_nll - prev_nll)
-        if light_width > 0:
-            ax_traj.barh(y, light_width, left=light_left,
-                         height=bar_height, color=light_color, edgecolor='none')
-        if dark_width > 0:
-            ax_traj.barh(y, dark_width, left=dark_left,
-                         height=bar_height, color=base_color, edgecolor='none')
-
-        ax_traj.text(cur_nll, y, f"{cur_nll:.3f}  (Δ {delta:+.3f})",
-                     ha='left' if is_minimization else 'right',
-                     va='center', fontsize=7, color=TEXT_COLOR)
-
-    if rejection_row is not None and not np.isnan(rejection_row['ll_mean']):
-        rejected_light = '#D7D7D7'
-        rejected_dark = '#9A9A9A'
-        prev_nll = cum_nlls[-1]
-        cur_nll = rejection_row['ll_mean']
-        _rl, _rlw = min(chance_nll, prev_nll), abs(prev_nll - chance_nll)
-        _rd, _rdw = min(prev_nll, cur_nll), abs(cur_nll - prev_nll)
-        if _rlw > 0:
-            ax_traj.barh(rej_y, _rlw, left=_rl, height=bar_height,
-                         color=rejected_light, edgecolor='none')
-        if _rdw > 0:
-            ax_traj.barh(rej_y, _rdw, left=_rd, height=bar_height,
-                         color=rejected_dark, edgecolor='none')
-        _rej_delta = cur_nll - prev_nll
-        ax_traj.text(cur_nll, rej_y,
-                     f"{cur_nll:.3f}  (Δ {_rej_delta:+.3f}, ns)",
-                     ha='left' if is_minimization else 'right',
-                     va='center', fontsize=7, color=NEUTRAL_COLOR, style='italic')
-
-    ytick_positions = list(y_positions)
-    ytick_labels = [_label_with_p(f"+{_pretty(d['feature_name'])}", d['p_adjusted']) for d in steps_data]
-    if rejection_row is not None:
-        ytick_positions.append(rej_y)
-        ytick_labels.append(_label_with_p(f"+{_pretty(rejection_row['feature_name'])}",
-                                          _step_test_p_adjusted(selection_steps[-1])))
-    ax_traj.set_yticks(ytick_positions)
-    ax_traj.set_yticklabels(ytick_labels, fontsize=10, color=TEXT_COLOR)
-    # Drop the y-axis tick MARKS (the small lines) while keeping the
-    # feature-name labels — cleaner look for a categorical axis.
-    ax_traj.tick_params(axis='y', length=0)
-    ax_traj.invert_yaxis()
-
-    if rejection_row is not None:
-        sep_y = (len(steps_data) - 1) + 0.5 + 0.10
-        ax_traj.axhline(sep_y, color=NEUTRAL_COLOR, linestyle='-',
-                        lw=0.4, alpha=0.5, zorder=0)
-
-    all_left_edges = list(cum_nlls)
-    if rejection_row is not None and not np.isnan(rejection_row['ll_mean']):
-        all_left_edges.append(rejection_row['ll_mean'])
-    # Orient the axis so the chance baseline sits on the LEFT and "better" is on
-    # the RIGHT for either metric direction. A minimized metric (NLL) has its best
-    # value at the smallest number and the axis is inverted (chance high on the
-    # left); a maximized metric (deviance) has its best value at the largest and
-    # the axis is left as-is (chance 0 on the left).
-    if is_minimization:
-        nll_span = chance_nll - min(all_left_edges)
-        ax_traj.set_xlim(min(all_left_edges) - 0.30 * nll_span, chance_nll + 0.015)
-        ax_traj.invert_xaxis()
-    else:
-        best_edge = max(all_left_edges)
-        val_span = abs(best_edge - chance_nll) or 1.0
-        ax_traj.set_xlim(chance_nll - 0.05 * val_span, best_edge + 0.30 * val_span)
-    ax_traj.set_xlabel(f"{metric_label} (held-out data)",
-                       fontsize=9, color=TEXT_COLOR)
-    ax_traj.spines['top'].set_visible(False)
-    ax_traj.spines['right'].set_visible(False)
-    ax_traj.tick_params(axis='both', colors=TEXT_COLOR, labelsize=8)
-    for spine in ax_traj.spines.values():
-        spine.set_edgecolor(TEXT_COLOR)
-
-    # Right panel: 3 vertical bars on the held-out accuracy axis
-    # Bar 1 (best univariate) is a single solid bar in that feature's
-    # category colour. Bars 2 and 3 are stacked: each segment is the
-    # marginal accuracy contribution of an accepted feature, coloured
-    # by the same self / other / dyadic palette as the trajectory and
-    # the filter grid. Bar 3 has the rejected step's best secondary-
-    # metric candidate stacked grey on top. Note that per-step marginal
-    # accuracy is not guaranteed monotonic (the selector optimises
-    # NLL, not accuracy), so a small negative segment is possible and
-    # is rendered faithfully as a thin downward step.
-    bar_width = 0.6
-    bar_x_positions = [0, 1]
-    bar_group_labels = ['best univariate', 'final model']
-
-    cum_scores = [float(d['sec_mean']) for d in steps_data]
-    score_marginals = []
-    _prev_score = chance_secondary
-    for _v in cum_scores:
-        score_marginals.append(_v - _prev_score)
-        _prev_score = _v
-
-    # Bar 1: best univariate (single solid bar).
-    bar1_color = (_category_color(best_univariate_feat)
-                  if best_univariate_feat is not None else NEUTRAL_COLOR)
-    ax_bars.bar(0, best_univariate_value - chance_secondary,
-                bottom=chance_secondary, width=bar_width,
-                color=bar1_color, edgecolor='none')
-
-    # Bar 2: stacked accepted features.
-    _bottom = chance_secondary
-    for d, marginal in zip(steps_data, score_marginals, strict=False):
-        seg_color = _category_color(d['feature_name'])
-        ax_bars.bar(1, marginal, bottom=_bottom, width=bar_width,
-                    color=seg_color, edgecolor='none')
-        _bottom += marginal
-
-    # Y-axis: floor at the metric's chance level; ceiling extended if needed to
-    # clear the feature-label stack above the tallest bar. An AUC/accuracy-like
-    # metric (chance 0.5) keeps the fixed 0.9 ceiling and 0.5..0.9 ticks; a
-    # correlation-like metric (chance 0) scales to its own data.
-    bar_tops = [best_univariate_value, final_score]
-    y_data_max = float(np.nanmax(bar_tops))
-    _auc_like = chance_secondary >= 0.5
-    label_line_spacing = 0.018 if _auc_like else max(0.006, 0.05 * y_data_max)
-    label_y_start_offset = 0.010 if _auc_like else max(0.004, 0.03 * y_data_max)
-    label_fontsize = 8
-    max_label_lines = len(steps_data)
-    label_stack_top = (y_data_max + label_y_start_offset
-                       + (max_label_lines + 1) * label_line_spacing)
-    y_top = max(0.9 if _auc_like else 0.0, label_stack_top)
-    ax_bars.set_ylim(chance_secondary, y_top)
-    _tick_top = 0.9 if _auc_like else y_data_max
-    visible_ticks = np.arange(chance_secondary, _tick_top + 1e-9, 0.05)
-    ax_bars.set_yticks(visible_ticks)
-    ax_bars.set_yticklabels([f"{t:.2f}" for t in visible_ticks],
-                            fontsize=8, color=TEXT_COLOR)
-
-    ax_bars.set_xticks(bar_x_positions)
-    ax_bars.set_xticklabels(bar_group_labels, fontsize=7, color=TEXT_COLOR)
-    ax_bars.set_xlim(-0.6, len(bar_group_labels) - 0.4)
-    ax_bars.set_ylabel(f"{secondary_label} (held-out data)",
-                       fontsize=9, color=TEXT_COLOR)
-
-    final_feat_labels = [f"+{_pretty(d['feature_name'])}" for d in steps_data]
-
-    # Bar 1 label stack: just the best-univariate feature name.
-    if best_univariate_feat is not None:
-        ax_bars.text(0, best_univariate_value + label_y_start_offset,
-                     _pretty(best_univariate_feat),
-                     ha='center', va='bottom',
-                     fontsize=label_fontsize, color=TEXT_COLOR)
-
-    # Bar 2 label stack: all accepted features in selection order
-    # (bottom of stack -> first added, top -> last added).
-    for j, lab in enumerate(final_feat_labels):
-        ax_bars.text(1, final_score + label_y_start_offset + j * label_line_spacing,
-                     lab, ha='center', va='bottom',
-                     fontsize=label_fontsize, color=TEXT_COLOR)
-
-    ax_bars.spines['top'].set_visible(False)
-    ax_bars.spines['right'].set_visible(False)
-    ax_bars.tick_params(axis='both', colors=TEXT_COLOR, labelsize=8)
-    for spine in ax_bars.spines.values():
-        spine.set_edgecolor(TEXT_COLOR)
-
-    fig_traj.subplots_adjust(left=0.18, right=0.97, top=0.95,
-                             bottom=0.12, wspace=0.12)
+    # The final model's test-set score (sessions reserved before screening and
+    # selection), drawn as a last item after the steps when the run stored its
+    # per-event test predictions.
+    _heldout_record = next((step['heldout'] for step in reversed(selection_steps)
+                            if 'heldout' in step and step['heldout'] is not None), None)
+    _test_scores = None
+    if _heldout_record is not None:
+        _settings_path = pathlib.Path(__file__).resolve().parent.parent / '_parameter_settings' / 'modeling_settings.json'
+        with _settings_path.open('r') as _settings_file:
+            _decision_threshold = float(json.load(_settings_file)['diagnostics']['binary_decision_threshold'])
+        _test_scores = _test_set_secondary_scores(_heldout_record, metric_secondary, _decision_threshold)
+    if _test_scores is None:
+        message_output("No per-event test-set record in this run; the test item is not drawn.")
+    _draw_step_fold_scatter(
+        ax_bars,
+        fold_values=[d['sec_scores'] for d in steps_data],
+        colors=[_category_color(d['feature_name']) for d in steps_data],
+        chance=chance_secondary,
+        ylabel=(secondary_label if _test_scores is not None else f"{secondary_label} (validation data)"),
+        tick_step=0.05,
+        test_values=(_test_scores[0] if _test_scores is not None else None),
+        test_pooled=(_test_scores[1] if _test_scores is not None else None),
+    )
+    _finish_selection_summary_layout(fig_traj, ax_traj, summary_layout)
 
     if save_plots:
         if output_dir is None:
@@ -2081,6 +2424,41 @@ def plot_model_selection_results(
     ncols = 4
     nrows = math.ceil(n_feats / ncols)
 
+    # The window length and the event it ends at come from the extraction's
+    # metadata: bout offsets use a shorter window than onsets, and the anchor
+    # is the bout onset, the bout offset or the onset of an individual
+    # vocalization of the target classes. Bout-parameter (duration) windows
+    # end at the bout onset.
+    _grid_input_md = (selection_metadata['_input_metadata']
+                      if selection_metadata is not None and '_input_metadata' in selection_metadata else {})
+    _first_filter = next(iter(raw_filter_data[0].values())) if is_cv_list else next(iter(raw_filter_data.values()))
+    filter_history_seconds = (float(_grid_input_md['filter_history_seconds'])
+                              if 'filter_history_seconds' in _grid_input_md
+                              else np.asarray(_first_filter).size / 150.0)
+    filter_tick_step = 0.5 if filter_history_seconds > 2.0 else 0.25
+    _analysis_specific = (_grid_input_md['analysis_specific']
+                          if 'analysis_specific' in _grid_input_md else {})
+    _target_type = (_analysis_specific['model_target_vocal_type']
+                    if 'model_target_vocal_type' in _analysis_specific else None)
+    _target_classes = (_analysis_specific['onset_target_classes']
+                       if 'onset_target_classes' in _analysis_specific else [])
+    if _target_type == 'bout_offset':
+        filter_anchor_label = 'bout offset'
+    elif _target_type == 'individual':
+        filter_anchor_label = 'squeak onset' if 'squeak' in _target_classes else 'USV onset'
+    else:
+        filter_anchor_label = 'bout onset'
+    # The filter's unit follows the engine that fitted it: the pyGAM tensor-product
+    # model stores probability partial dependences, while the linear engines (the
+    # JAX two-class model and the basis-projected logistic regression) store their
+    # log-odds weights on the frame axis. A run that records no engine predates the
+    # engine knob and was fitted with pyGAM.
+    _grid_run_md = (selection_metadata['_run_metadata']
+                    if selection_metadata is not None and '_run_metadata' in selection_metadata else {})
+    _grid_knobs = _grid_run_md['extra_knobs'] if 'extra_knobs' in _grid_run_md else {}
+    _grid_engine = _grid_knobs['model_engine'] if 'model_engine' in _grid_knobs else 'pygam'
+    filter_ylabel = "Partial dependence (ΔP)" if _grid_engine == 'pygam' else "Filter weight (log-odds)"
+
     fig_grid, axes_grid = plt.subplots(
         nrows=nrows, ncols=ncols,
         figsize=(ncols * 2.5, nrows * 2.0),
@@ -2130,7 +2508,11 @@ def plot_model_selection_results(
                     p_low = None  # No shading for single fit
 
             if mean_filter is not None:
-                filter_size_vector = np.arange(mean_filter.size)
+                # Lag of each filter sample in seconds before the anchor event:
+                # the window spans the recorded history length and ends at the
+                # anchor (sample i sits at -history + i * history / n).
+                filter_size_vector = (-filter_history_seconds
+                                      + np.arange(mean_filter.size) * filter_history_seconds / mean_filter.size)
 
                 if any(x in feature for x in DYADIC_KEYWORDS):
                     c = DYADIC_COLOR
@@ -2149,12 +2531,11 @@ def plot_model_selection_results(
                 # Plot Mean Line
                 ax.plot(filter_size_vector, mean_filter, color=c, lw=1.5)
 
-                tick_positions = np.arange(0, 650, 75)
-                tick_labels = np.round(np.arange(-4, 0.5, 0.5), decimals=2)
-                ax.set_xticks(tick_positions)
-                ax.set_xticklabels(tick_labels, fontsize=7, color=TEXT_COLOR)
-                ax.set_xlabel("Time relative to bout onset (s)", fontsize=8, color=TEXT_COLOR)
-                ax.set_ylabel("Partial dependence (ΔP)", fontsize=8, color=TEXT_COLOR)
+                tick_values = np.arange(-filter_history_seconds, 1e-9, filter_tick_step)
+                ax.set_xticks(tick_values)
+                ax.set_xticklabels([f"{t:g}" for t in np.round(tick_values, 2)], fontsize=7, color=TEXT_COLOR)
+                ax.set_xlabel(f"Time relative to {filter_anchor_label} (s)", fontsize=8, color=TEXT_COLOR)
+                ax.set_ylabel(filter_ylabel, fontsize=8, color=TEXT_COLOR)
 
                 # Draw the zero reference only when the filter's own value range spans
                 # 0. An axhline autoscales the axis to include it, so forcing 0 in
@@ -2407,7 +2788,7 @@ def plot_univariate_multinomial_performance(
 
         ax.set_xticks(range(len(current_order)))
         ax.set_xticklabels([s['name'] for s in current_order], rotation=45, ha='right', fontsize=8, color=TEXT_COLOR)
-        ax.set_ylabel(f"{label} (Held-out data)", color=TEXT_COLOR)
+        ax.set_ylabel(f"{label} (validation data)", color=TEXT_COLOR)
         ax.tick_params(axis='both', colors=TEXT_COLOR)
 
         for spine in ax.spines.values():
@@ -2482,7 +2863,7 @@ def plot_univariate_multinomial_performance(
             ax = axes_trio[j]
 
             if j == 2:
-                # NaN-aware: a class absent from the pooled held-out set produces an
+                # NaN-aware: a class absent from the pooled validation set produces an
                 # all-NaN row under normalize='true', so plain np.max would make v_limit
                 # NaN and degenerate the colour scaling. Fall back to a unit scale if no
                 # finite spread remains.
@@ -2761,25 +3142,24 @@ def plot_multinomial_selection_trajectory(
 
     Layout
     ------
-    * **Left panel** -- one horizontal bar per accepted step, top-to-
-      bottom in selection order. Each bar is split into a lighter
-      base (the previous cumulative value of ``metric_primary``) and
-      a darker tip (THIS step's marginal contribution). Bars are
-      coloured by the same self / other / dyadic palette used in the
-      filter grid. A rejected final step, if any, is drawn below a
-      thin separator in grey. For maximisation metrics (AUC, score,
-      etc.) bars grow rightward from the chance baseline on the left;
-      for minimisation metrics (log-loss, brier) the x-axis is
-      inverted and bars grow rightward from chance on the right.
-    * **Right panel** -- two vertical bars on the secondary-metric
-      axis: best univariate (single solid bar in the winning
-      feature's category colour) and final accepted model (stacked
-      bar, one segment per accepted feature, segment height = that
-      feature's marginal contribution to the secondary metric).
-      Feature labels stack above each bar. The y-axis floor is the
-      chance baseline computed for the number of USV categories in
-      the pickle (``1 / K`` for balanced accuracy / recall, ``0.5``
-      for macro-AUC).
+    * **Left panel** -- the step trajectory drawn by
+      ``_draw_selection_trajectory``: one horizontal bar per accepted step
+      on a "Model selection step #" axis numbered from 1, split into a
+      light base (the previous cumulative value of ``metric_primary``) and
+      a dark tip (this step's change), coloured by the self / other /
+      dyadic palette, with the added feature and its change written inside
+      the bar. A rejected final step is drawn grey below a thin separator.
+      For minimisation metrics (log-loss, brier) the x-axis is inverted so
+      better is always to the right.
+    * **Right panel** -- ``_draw_step_fold_scatter``: ``metric_secondary``
+      of the model at every accepted step, one black-edged dot per
+      cross-validation fold in the added feature's colour, with the mean
+      (thick line) and +/- 1 SEM. The y-axis floor is the chance baseline
+      computed for the number of USV categories in the pickle (``1 / K``
+      for balanced accuracy / recall, ``0.5`` for macro-AUC).
+
+    Rows and step columns have fixed physical sizes
+    (``_selection_summary_figure``).
 
     Robustness
     ----------
@@ -2800,13 +3180,13 @@ def plot_multinomial_selection_trajectory(
         trajectory.
     primary_metric_name : str, default ``'Area Under the ROC Curve'``
         Display name for ``metric_primary``; used as the left-panel
-        x-axis label (with `` (held-out data)`` appended).
+        x-axis label (with `` (validation data)`` appended).
     metric_secondary : str, default ``'score'``
         Key for the secondary per-fold metric. Used for the right-
         panel bars.
     secondary_metric_name : str, default ``'Balanced Accuracy'``
         Display name for ``metric_secondary``; used as the right-
-        panel y-axis label (with `` (held-out data)`` appended).
+        panel y-axis label (with `` (validation data)`` appended).
     save_plot : bool, default False
         Whether to save the figure to disk.
     output_dir : str, optional
@@ -2818,14 +3198,10 @@ def plot_multinomial_selection_trajectory(
         presentation-friendly labels used for every annotation. Raw
         names not in the map render unchanged.
     secondary_ylim_max : float, optional
-        Hard upper bound for the right-panel y-axis (the secondary-
-        metric bars). When supplied, overrides the default rate-metric
-        cap (0.31) used for AUC / balanced-accuracy / recall / etc.
-        The visible tick range stops at this value, or at the tallest
-        bar rounded up to the next 0.05 when that is higher (so a cap
+        Lowest allowed top of the right-panel y-axis. The axis still ends at
+        the first tick above the highest fold when that is higher, so a value
         below the data never leaves the axis with a single tick at the
-        chance floor); the label-stack above each bar still extends
-        past it if needed so feature annotations are not clipped.
+        chance floor.
     message_output : Callable
         Sink for user-facing messages (progress, skips, saved-file paths);
         defaults to ``print``.
@@ -2943,36 +3319,9 @@ def plot_multinomial_selection_trajectory(
         sec_vals = sec_vals[np.isfinite(sec_vals)]
         steps_data.append({
             'feature_name': winner,
-            'p_adjusted': _step_test_p_adjusted(s),
             'prim_mean': _fold_mean(fm, metric_primary),
-            'sec_mean': _fold_mean(fm, metric_secondary),
             'sec_vals': sec_vals,
         })
-
-    # First accepted step is the multinomial anchor selection: every
-    # candidate evaluated here is a single-feature model, so its
-    # candidates_summary is the right place to pull best-univariate
-    # numbers from.
-    anchor_step = accepted_steps[0]
-    best_univariate_value = float('nan')
-    best_univariate_feat = None
-    for f, cdata in anchor_step['candidates_summary'].items():
-        fm = cdata['folds']['metrics']
-        v = np.array((fm[metric_secondary] if metric_secondary in fm else []), dtype=float)
-        v = v[np.isfinite(v)]
-        if v.size == 0:
-            continue
-        mu = float(np.mean(v))
-        if np.isnan(best_univariate_value) or mu > best_univariate_value:
-            best_univariate_value = mu
-            best_univariate_feat = f
-    if np.isnan(best_univariate_value) and steps_data:
-        # Fall back to the anchor winner's score if the candidate scan
-        # produced no finite means (extreme NaN-fold case).
-        best_univariate_value = steps_data[0]['sec_mean']
-        best_univariate_feat = steps_data[0]['feature_name']
-
-    final_score = float(steps_data[-1]['sec_mean'])
 
     # Rejected final step lookup: the feature the step test turned down; a run
     # without a test record falls back to the best secondary-metric candidate
@@ -3038,256 +3387,46 @@ def plot_multinomial_selection_trajectory(
             return self_col
         return other_col
 
-    def _lighten(hex_color: str, factor: float = 0.65) -> str:
-        """
-        Linearly interpolate a hex colour toward white.
-
-        Parameters
-        ----------
-        hex_color : str
-            ``#RRGGBB`` source colour.
-        factor : float, default 0.65
-            0.0 returns the source colour unchanged; 1.0 returns white.
-
-        Returns
-        -------
-        str
-            The lightened colour as a lowercase ``#rrggbb`` string.
-        """
-        h = hex_color.lstrip('#')
-        r = int(h[0:2], 16)
-        g = int(h[2:4], 16)
-        b = int(h[4:6], 16)
-        r = round(r + (255 - r) * factor)
-        g = round(g + (255 - g) * factor)
-        b = round(b + (255 - b) * factor)
-        return f"#{r:02x}{g:02x}{b:02x}"
-
     _pretty = _make_feature_pretty(feature_label_overrides, selection_metadata)
 
-    cum_prim = [d['prim_mean'] for d in steps_data]
-    cum_sec = [d['sec_mean'] for d in steps_data]
-    sec_marginals = [cum_sec[0] - chance_secondary]
-    for i in range(1, len(cum_sec)):
-        sec_marginals.append(cum_sec[i] - cum_sec[i - 1])
-
-    # Figure layout
-    n_rows_total = len(steps_data) + (1 if rejection_row is not None else 0)
-    fig_height = max(3.0, 0.32 * n_rows_total + 1.8)
-    fig_traj, (ax_traj, ax_bars) = plt.subplots(
-        nrows=1, ncols=2,
-        figsize=(10.5, fig_height), dpi=_FIGURE_DPI,
-        gridspec_kw={'width_ratios': [2.2, 1.0]},
+    # Summary figure: the step trajectory (left) and one per-fold scatter of the
+    # secondary metric per accepted step (right); see the shared helpers. Rate
+    # metrics and AUC tick every 0.05; other metrics get a round spacing.
+    fig_traj, ax_traj, (ax_bars,), summary_layout = _selection_summary_figure(
+        n_accepted=len(steps_data), has_rejection=rejection_row is not None, n_scatter_panels=1)
+    _draw_selection_trajectory(
+        ax_traj,
+        features=[d['feature_name'] for d in steps_data],
+        values=[d['prim_mean'] for d in steps_data],
+        chance=chance_primary,
+        is_minimization=is_minimization,
+        category_color=_category_color,
+        pretty=_pretty,
+        xlabel=f"{primary_metric_name} (validation data)",
+        y_limits=summary_layout['traj_y_limits'],
+        rejected_feature=rejection_row['feature_name'] if rejection_row is not None else None,
+        rejected_value=rejection_row['prim_mean'] if rejection_row is not None else float('nan'),
     )
-    fig_traj.patch.set_facecolor(BG_COLOR)
-    ax_traj.set_facecolor(BG_COLOR)
-    ax_bars.set_facecolor(BG_COLOR)
-
-    bar_height = 0.88
-    y_positions = list(range(len(steps_data)))
-    rej_y = len(steps_data) + 0.4 if rejection_row is not None else None
-
-    for row_idx, d in enumerate(steps_data):
-        y = y_positions[row_idx]
-        base_color = _category_color(d['feature_name'])
-        light_color = _lighten(base_color, factor=0.65)
-        prev_p = cum_prim[row_idx - 1] if row_idx > 0 else chance_primary
-        cur_p = cum_prim[row_idx]
-
-        if is_minimization:
-            # Bars grow leftward (lower = better). Light = prev->chance,
-            # dark tip = cur->prev. x-axis inverted below.
-            if chance_primary > prev_p:
-                ax_traj.barh(y, chance_primary - prev_p, left=prev_p,
-                             height=bar_height, color=light_color,
-                             edgecolor='none')
-            if prev_p > cur_p:
-                ax_traj.barh(y, prev_p - cur_p, left=cur_p,
-                             height=bar_height, color=base_color,
-                             edgecolor='none')
-            delta = cur_p - prev_p
-            ax_traj.text(cur_p - 0.003 * (chance_primary - cur_p + 1e-9), y,
-                         f"{cur_p:.3f}  (Δ {delta:+.3f})",
-                         ha='left', va='center', fontsize=7,
-                         color=TEXT_COLOR)
-        else:
-            # Bars grow rightward (higher = better). Light = chance->prev,
-            # dark tip = prev->cur.
-            if prev_p > chance_primary:
-                ax_traj.barh(y, prev_p - chance_primary, left=chance_primary,
-                             height=bar_height, color=light_color,
-                             edgecolor='none')
-            if cur_p > prev_p:
-                ax_traj.barh(y, cur_p - prev_p, left=prev_p,
-                             height=bar_height, color=base_color,
-                             edgecolor='none')
-            delta = cur_p - prev_p
-            ax_traj.text(cur_p + 0.003, y,
-                         f"{cur_p:.3f}  (Δ {delta:+.3f})",
-                         ha='left', va='center', fontsize=7,
-                         color=TEXT_COLOR)
-
-    if rejection_row is not None and not np.isnan(rejection_row['prim_mean']):
-        rejected_light = '#D7D7D7'
-        rejected_dark = '#9A9A9A'
-        prev_p = cum_prim[-1]
-        cur_p = rejection_row['prim_mean']
-        if is_minimization:
-            if chance_primary > prev_p:
-                ax_traj.barh(rej_y, chance_primary - prev_p, left=prev_p,
-                             height=bar_height, color=rejected_light,
-                             edgecolor='none')
-            if prev_p > cur_p:
-                ax_traj.barh(rej_y, prev_p - cur_p, left=cur_p,
-                             height=bar_height, color=rejected_dark,
-                             edgecolor='none')
-            ax_traj.text(cur_p - 0.003, rej_y,
-                         f"{cur_p:.3f}  (Δ {cur_p - prev_p:+.3f}, ns)",
-                         ha='left', va='center', fontsize=7,
-                         color=NEUTRAL_COLOR, style='italic')
-        else:
-            if prev_p > chance_primary:
-                ax_traj.barh(rej_y, prev_p - chance_primary, left=chance_primary,
-                             height=bar_height, color=rejected_light,
-                             edgecolor='none')
-            if cur_p > prev_p:
-                ax_traj.barh(rej_y, cur_p - prev_p, left=prev_p,
-                             height=bar_height, color=rejected_dark,
-                             edgecolor='none')
-            ax_traj.text(cur_p + 0.003, rej_y,
-                         f"{cur_p:.3f}  (Δ {cur_p - prev_p:+.3f}, ns)",
-                         ha='left', va='center', fontsize=7,
-                         color=NEUTRAL_COLOR, style='italic')
-
-    ytick_positions = list(y_positions)
-    ytick_labels = [_label_with_p(f"+{_pretty(d['feature_name'])}", d['p_adjusted']) for d in steps_data]
-    if rejection_row is not None:
-        ytick_positions.append(rej_y)
-        ytick_labels.append(_label_with_p(f"+{_pretty(rejection_row['feature_name'])}",
-                                          _step_test_p_adjusted(selection_steps[-1])))
-    ax_traj.set_yticks(ytick_positions)
-    ax_traj.set_yticklabels(ytick_labels, fontsize=10, color=TEXT_COLOR)
-    ax_traj.tick_params(axis='y', length=0)
-    ax_traj.invert_yaxis()
-
-    if rejection_row is not None:
-        sep_y = (len(steps_data) - 1) + 0.5 + 0.10
-        ax_traj.axhline(sep_y, color=NEUTRAL_COLOR, linestyle='-',
-                        lw=0.4, alpha=0.5, zorder=0)
-
-    # X-axis range / orientation depending on direction.
-    all_endpoints = list(cum_prim)
-    if rejection_row is not None and not np.isnan(rejection_row['prim_mean']):
-        all_endpoints.append(rejection_row['prim_mean'])
-    if is_minimization:
-        span = chance_primary - min(all_endpoints)
-        span = span if span > 1e-9 else 1.0
-        x_left_lim = min(all_endpoints) - 0.30 * span
-        x_right_lim = chance_primary + 0.015 * abs(chance_primary if chance_primary > 0 else 1)
-        ax_traj.set_xlim(x_left_lim, x_right_lim)
-        ax_traj.invert_xaxis()
-    else:
-        span = max(all_endpoints) - chance_primary
-        span = span if span > 1e-9 else 1.0
-        x_left_lim = chance_primary - 0.015
-        x_right_lim = max(all_endpoints) + 0.30 * span
-        ax_traj.set_xlim(x_left_lim, x_right_lim)
-
-    ax_traj.set_xlabel(f"{primary_metric_name} (held-out data)",
-                       fontsize=10, color=TEXT_COLOR)
-    ax_traj.spines['top'].set_visible(False)
-    ax_traj.spines['right'].set_visible(False)
-    ax_traj.tick_params(axis='x', colors=TEXT_COLOR)
-    for spine in ax_traj.spines.values():
-        spine.set_edgecolor(TEXT_COLOR)
-
-    # Right panel: 2 vertical bars (best univariate, final)
-    bar_width = 0.6
-    bar_x_positions = [0, 1]
-    bar_group_labels = ['best univariate', 'final model']
-
-    bar1_color = (_category_color(best_univariate_feat)
-                  if best_univariate_feat is not None else NEUTRAL_COLOR)
-    ax_bars.bar(0, best_univariate_value - chance_secondary,
-                bottom=chance_secondary, width=bar_width,
-                color=bar1_color, edgecolor='none')
-
-    _bottom = chance_secondary
-    for d, marginal in zip(steps_data, sec_marginals, strict=False):
-        seg_color = _category_color(d['feature_name'])
-        ax_bars.bar(1, marginal, bottom=_bottom, width=bar_width,
-                    color=seg_color, edgecolor='none')
-        _bottom += marginal
-
-    bar_tops = [best_univariate_value, final_score]
-    y_data_max = float(np.nanmax(bar_tops))
-    label_line_spacing = 0.006
-    label_y_start_offset = 0.005
-    label_fontsize = 8
-    max_label_lines = len(steps_data)
-    label_stack_top = (y_data_max + label_y_start_offset
-                       + (max_label_lines + 1) * label_line_spacing)
-
-    # Cap visible y-axis at 0.4 -- multinomial balanced accuracy with
-    # K=6 classes tops out around 0.3 in practice, so a higher cap
-    # leaves the bars looking stubby. y_top extends past the cap when
-    # the feature-label stack above the bars would otherwise clip;
-    # the visible tick range still stops at the cap so the axis reads
-    # cleanly. First tick is rounded up to the nearest 0.05 above
-    # the chance floor (e.g., 0.20 when chance = 1/6 ~= 0.167).
-    # ``secondary_ylim_max`` overrides the default rate-metric cap
-    # when the caller wants tighter framing (e.g., 0.26 for K=7).
-    # The cap never stops the ticks below the tallest bar: it is raised
-    # to the bar top rounded up to the next 0.05, so a cap tuned for one
-    # category count (0.26 for K=7, chance ~0.14) cannot leave a K=4 run
-    # (chance 0.25, bars ~0.35) with a single tick at the floor.
-    if metric_secondary in rate_metrics or metric_secondary == 'auc':
-        cap = float(secondary_ylim_max) if secondary_ylim_max is not None else 0.31
-        cap = max(cap, float(np.ceil(y_data_max * 20 - 1e-9) / 20))
-        y_top = max(cap, label_stack_top + 0.01)
-        first_tick = float(np.ceil(chance_secondary * 20) / 20)
-        visible_ticks = np.arange(first_tick, cap + 1e-9, 0.05)
-        if visible_ticks.size == 0:
-            visible_ticks = np.linspace(first_tick, cap, 3)
-        ax_bars.set_ylim(chance_secondary, y_top)
-        ax_bars.set_yticks(visible_ticks)
-        ax_bars.set_yticklabels([f"{t:.2f}" for t in visible_ticks],
-                                fontsize=8, color=TEXT_COLOR)
-    else:
-        if secondary_ylim_max is not None:
-            y_top = max(float(secondary_ylim_max), label_stack_top + 0.01)
-        else:
-            y_top = max(y_data_max + 0.10, label_stack_top)
-        ax_bars.set_ylim(chance_secondary, y_top)
-
-    ax_bars.set_xticks(bar_x_positions)
-    ax_bars.set_xticklabels(bar_group_labels, fontsize=7, color=TEXT_COLOR)
-    ax_bars.set_xlim(-0.6, len(bar_group_labels) - 0.4)
-    ax_bars.set_ylabel(f"{secondary_metric_name} (held-out data)",
-                       fontsize=10, color=TEXT_COLOR)
-
-    final_feat_labels = [f"+{_pretty(d['feature_name'])}" for d in steps_data]
-
-    if best_univariate_feat is not None:
-        ax_bars.text(0, best_univariate_value + label_y_start_offset,
-                     _pretty(best_univariate_feat),
-                     ha='center', va='bottom',
-                     fontsize=label_fontsize, color=TEXT_COLOR)
-
-    for j, lab in enumerate(final_feat_labels):
-        ax_bars.text(1, final_score + label_y_start_offset
-                     + j * label_line_spacing,
-                     lab, ha='center', va='bottom',
-                     fontsize=label_fontsize, color=TEXT_COLOR)
-
-    ax_bars.spines['top'].set_visible(False)
-    ax_bars.spines['right'].set_visible(False)
-    ax_bars.tick_params(axis='both', colors=TEXT_COLOR)
-    for spine in ax_bars.spines.values():
-        spine.set_edgecolor(TEXT_COLOR)
-
-    fig_traj.subplots_adjust(left=0.18, right=0.97, top=0.95,
-                             bottom=0.12, wspace=0.12)
+    # The final model's test-set score, drawn as a last item after the steps
+    # when the run stores its per-event test predictions with their sessions.
+    _heldout_record = next((step['heldout'] for step in reversed(selection_steps)
+                            if 'heldout' in step and step['heldout'] is not None), None)
+    _test_scores = (_test_set_secondary_scores(_heldout_record, metric_secondary, 0.5)
+                    if _heldout_record is not None else None)
+    if _test_scores is None:
+        message_output("No per-event test-set record for this metric; the test item is not drawn.")
+    _draw_step_fold_scatter(
+        ax_bars,
+        fold_values=[d['sec_vals'] for d in steps_data],
+        colors=[_category_color(d['feature_name']) for d in steps_data],
+        chance=chance_secondary,
+        ylabel=(secondary_metric_name if _test_scores is not None else f"{secondary_metric_name} (validation data)"),
+        tick_step=0.05 if (metric_secondary in rate_metrics or metric_secondary == 'auc') else None,
+        y_top_at_least=secondary_ylim_max,
+        test_values=(_test_scores[0] if _test_scores is not None else None),
+        test_pooled=(_test_scores[1] if _test_scores is not None else None),
+    )
+    _finish_selection_summary_layout(fig_traj, ax_traj, summary_layout)
 
     if save_plot:
         if output_dir is None:
@@ -3313,7 +3452,7 @@ def _final_null_filter_weights(selection_steps: list, features: list, layout: st
     -----------
     The no-signal band of a selection's final filters: the filters of the final
     feature set refit with the target permuted across the development set, stored by the
-    torus and multinomial selections with the held-out block
+    torus and multinomial selections with the test-set block
     (``heldout['null_weights']``, ``model_params.filter_null_permutations`` refits),
     reordered to ``features``.
 
@@ -3334,7 +3473,7 @@ def _final_null_filter_weights(selection_steps: list, features: list, layout: st
     -------
     null_weights (np.ndarray | None)
         The reordered permuted filters, or ``None`` when the artifact stores none
-        (held-out reserve disabled, ``filter_null_permutations = 0``, an artifact
+        (test-set reserve disabled, ``filter_null_permutations = 0``, an artifact
         that predates the band, or a feature set that does not match).
     """
     heldout = next((step['heldout'] for step in reversed(selection_steps)
@@ -3933,7 +4072,7 @@ def plot_multinomial_selection_diagnosis(
     return fig_auc, fig_rec
 
 
-# Display names (base names: the panels append " (held-out data)" /
+# Display names (base names: the panels append " (validation data)" /
 # " improvement (%)") for the selection scores the trajectory plotter
 # reads from the artifact by default.
 _MANIFOLD_METRIC_LABELS = {
@@ -3952,10 +4091,6 @@ _MANIFOLD_SECONDARY_BY_GEOMETRY = {
     'euclidean': [('euclidean_mae_macro', "manifold-position error")],
 }
 
-# Gap, in points, between a trajectory bar's end and its score label. A screen
-# offset (not a data-unit one) keeps the label next to its bar whatever the
-# metric's scale or span, and on an inverted (lower-is-better) axis too.
-_LABEL_OFFSET_PT = 4
 
 
 def plot_manifold_selection_trajectory(
@@ -3980,27 +4115,33 @@ def plot_manifold_selection_trajectory(
 
     Layout
     ------
-    * **Left panel** -- one horizontal bar per accepted step, top-to-
-      bottom in selection order. Each bar is split into a lighter base
-      (the previous cumulative value of ``metric_primary``) and a
-      darker tip (this step's marginal contribution). Bars are
-      coloured by the self / other / dyadic palette so the same
-      feature gets the same colour across figures. A rejected final
-      step, if any, is drawn below a thin separator in grey.
-      Higher-is-better metrics (``r2_spatial``, ``pearson_x/y``,
-      ``spearman_x/y``) grow rightward from the chance baseline on
-      the left; lower-is-better error metrics (``euclidean_mae``,
+    * **Left panel** -- the step trajectory drawn by
+      ``_draw_selection_trajectory``: one horizontal bar per accepted step
+      on a "Model selection step #" axis numbered from 1, split into a
+      light base (the previous cumulative value of ``metric_primary``) and
+      a dark tip (this step's change), coloured by the self / other /
+      dyadic palette, with the added feature and its change written inside
+      the bar. A rejected final step is drawn grey below a thin separator.
+      Higher-is-better metrics (``vm_logscore``, ``r2_spatial``,
+      ``pearson_x/y``, ``spearman_x/y``) run rightward from the chance
+      baseline; lower-is-better error metrics (``euclidean_mae``,
       ``euclidean_rmse``, ``euclidean_mae_weighted``, ``mahalanobis_mae``,
       ``mae_x``, ``mae_y``, the two geodesic errors and the three
-      region-balanced ``*_mae_macro`` twins) flip the x-axis and grow
-      rightward from the step-0 (null-model / intercept-only) baseline on
-      the right.
-    * **Right panel** -- two vertical bars on the secondary-metric
-      axis: best univariate (= the anchor, since the manifold selector
-      restricts the first step to a single anchor feature) and final
-      accepted model (stacked bar, one segment per accepted feature,
-      segment height = that feature's marginal contribution to the
-      secondary metric). Feature labels stack above each bar.
+      region-balanced ``*_mae_macro`` twins) invert the x-axis so better is
+      always to the right, anchored at the step-0 (null-model /
+      intercept-only) baseline.
+    * **Right panels** -- one ``_draw_step_fold_scatter`` panel per secondary
+      metric: at every accepted step, one black-edged dot per
+      cross-validation fold in the added feature's colour, with the mean
+      (thick line) and +/- 1 SEM. Each fold value is that fold's improvement
+      over the step-0 baseline -- in percent of the baseline,
+      ``(baseline - value) / baseline`` for an error metric, when
+      ``secondary_as_pct_of_chance`` is set, otherwise the signed difference
+      oriented so positive is better -- so the panels start at 0 (lower when
+      a fold is worse than the baseline).
+
+    Rows and step columns have fixed physical sizes
+    (``_selection_summary_figure``).
 
     Chance baselines
     ----------------
@@ -4034,7 +4175,7 @@ def plot_manifold_selection_trajectory(
         falling back to a metric the run did not select on.
     primary_metric_name : str, optional
         Display name (base name) for ``metric_primary``; used as the
-        left-panel x-axis label (with `` (held-out data)`` appended).
+        left-panel x-axis label (with `` (validation data)`` appended).
         ``None`` (default) uses the label in ``_MANIFOLD_METRIC_LABELS``
         for the resolved key (``'von Mises log-score'`` for
         ``vm_logscore``), or the key itself when it has no entry there.
@@ -4045,7 +4186,7 @@ def plot_manifold_selection_trajectory(
         geometry instead (see ``metrics_secondary``).
     secondary_metric_name : str, optional
         Display name (base name) for ``metric_secondary``; used as the
-        right-panel y-axis label (with `` (held-out data)`` appended).
+        right-panel y-axis label (with `` (validation data)`` appended).
         ``None`` (default) uses the metric key.
     metrics_secondary : list of (str, str), optional
         List of ``(metric_key, display_name)`` pairs; each renders one gain
@@ -4250,7 +4391,6 @@ def plot_manifold_selection_trajectory(
         fm = wd['folds']['metrics']
         steps_data.append({
             'feature_name': winner,
-            'p_adjusted': _step_test_p_adjusted(s),
             'prim_mean': _fold_mean(fm, metric_primary),
         })
 
@@ -4314,200 +4454,122 @@ def plot_manifold_selection_trajectory(
             return self_col
         return other_col
 
-    def _lighten(hex_color: str, factor: float = 0.65) -> str:
-        """
-        Linearly interpolate a hex colour toward white.
-
-        Parameters
-        ----------
-        hex_color : str
-            ``#RRGGBB`` source colour.
-        factor : float, default 0.65
-            0.0 returns the source colour unchanged; 1.0 returns white.
-
-        Returns
-        -------
-        str
-            The lightened colour as a lowercase ``#rrggbb`` string.
-        """
-        h = hex_color.lstrip('#')
-        r = int(h[0:2], 16)
-        g = int(h[2:4], 16)
-        b = int(h[4:6], 16)
-        r = round(r + (255 - r) * factor)
-        g = round(g + (255 - g) * factor)
-        b = round(b + (255 - b) * factor)
-        return f"#{r:02x}{g:02x}{b:02x}"
-
     _pretty = _make_feature_pretty(feature_label_overrides, selection_metadata)
 
-    cum_prim = [d['prim_mean'] for d in steps_data]
-
-    # Figure layout: the primary trajectory (left) + one gain panel per secondary metric.
-    n_rows_total = len(steps_data) + (1 if rejection_row is not None else 0)
-    fig_height = max(3.0, 0.32 * n_rows_total + 1.8)
-    n_sec = len(metrics_secondary)
-    fig_traj, axes = plt.subplots(
-        nrows=1, ncols=1 + n_sec,
-        figsize=(7.0 + 3.5 * n_sec, fig_height), dpi=_FIGURE_DPI,
-        gridspec_kw={'width_ratios': [2.2] + [1.0] * n_sec},
+    # Summary figure: the step trajectory (left) and one per-fold scatter per
+    # secondary metric (right); see the shared helpers. A secondary panel plots
+    # each fold's improvement over its own step-0 baseline (the gate baseline
+    # scored on the same fold; the test item likewise uses the baseline scored
+    # on the test sessions), oriented so positive is better: lower-is-better
+    # error metrics are flipped. With `secondary_as_pct_of_chance` the
+    # improvement is in percent of the baseline,
+    # ((baseline - value) / baseline for an error metric), dimensionless and
+    # comparable across metrics on very different scales (e.g. euclidean MAE
+    # ~0.35 vs pullback geodesic ~38).
+    fig_traj, ax_traj, sec_axes, summary_layout = _selection_summary_figure(
+        n_accepted=len(steps_data), has_rejection=rejection_row is not None,
+        n_scatter_panels=len(metrics_secondary))
+    _draw_selection_trajectory(
+        ax_traj,
+        features=[d['feature_name'] for d in steps_data],
+        values=[d['prim_mean'] for d in steps_data],
+        chance=chance_primary,
+        is_minimization=is_minimization_primary,
+        category_color=_category_color,
+        pretty=_pretty,
+        xlabel=f"{primary_metric_name} (validation data)",
+        y_limits=summary_layout['traj_y_limits'],
+        rejected_feature=rejection_row['feature_name'] if rejection_row is not None else None,
+        rejected_value=rejection_row['prim_mean'] if rejection_row is not None else float('nan'),
     )
-    axes = np.atleast_1d(axes)
-    ax_traj = axes[0]
-    sec_axes = axes[1:]
-    fig_traj.patch.set_facecolor(BG_COLOR)
-    for _ax in axes:
-        _ax.set_facecolor(BG_COLOR)
-
-    bar_height = 0.88
-    y_positions = list(range(len(steps_data)))
-    rej_y = len(steps_data) + 0.4 if rejection_row is not None else None
-
-    for row_idx, d in enumerate(steps_data):
-        y = y_positions[row_idx]
-        base_color = _category_color(d['feature_name'])
-        light_color = _lighten(base_color, factor=0.65)
-        prev_p = cum_prim[row_idx - 1] if row_idx > 0 else chance_primary
-        cur_p = cum_prim[row_idx]
-
-        if is_minimization_primary:
-            if chance_primary > prev_p:
-                ax_traj.barh(y, chance_primary - prev_p, left=prev_p,
-                             height=bar_height, color=light_color,
-                             edgecolor='none')
-            if prev_p > cur_p:
-                ax_traj.barh(y, prev_p - cur_p, left=cur_p,
-                             height=bar_height, color=base_color,
-                             edgecolor='none')
-            delta = cur_p - prev_p
-            ax_traj.annotate(f"{cur_p:.3f}  (Δ {delta:+.3f})", xy=(cur_p, y),
-                             xytext=(_LABEL_OFFSET_PT, 0), textcoords='offset points',
-                             ha='left', va='center', fontsize=7,
-                             color=TEXT_COLOR)
-        else:
-            if prev_p > chance_primary:
-                ax_traj.barh(y, prev_p - chance_primary, left=chance_primary,
-                             height=bar_height, color=light_color,
-                             edgecolor='none')
-            if cur_p > prev_p:
-                ax_traj.barh(y, cur_p - prev_p, left=prev_p,
-                             height=bar_height, color=base_color,
-                             edgecolor='none')
-            delta = cur_p - prev_p
-            ax_traj.annotate(f"{cur_p:.3f}  (Δ {delta:+.3f})", xy=(cur_p, y),
-                             xytext=(_LABEL_OFFSET_PT, 0), textcoords='offset points',
-                             ha='left', va='center', fontsize=7,
-                             color=TEXT_COLOR)
-
-    if rejection_row is not None and not np.isnan(rejection_row['prim_mean']):
-        rejected_light = '#D7D7D7'
-        rejected_dark = '#9A9A9A'
-        prev_p = cum_prim[-1]
-        cur_p = rejection_row['prim_mean']
-        if is_minimization_primary:
-            if chance_primary > prev_p:
-                ax_traj.barh(rej_y, chance_primary - prev_p, left=prev_p,
-                             height=bar_height, color=rejected_light,
-                             edgecolor='none')
-            if prev_p > cur_p:
-                ax_traj.barh(rej_y, prev_p - cur_p, left=cur_p,
-                             height=bar_height, color=rejected_dark,
-                             edgecolor='none')
-            ax_traj.annotate(f"{cur_p:.3f}  (Δ {cur_p - prev_p:+.3f}, ns)", xy=(cur_p, rej_y),
-                             xytext=(_LABEL_OFFSET_PT, 0), textcoords='offset points',
-                             ha='left', va='center', fontsize=7,
-                             color=NEUTRAL_COLOR, style='italic')
-        else:
-            if prev_p > chance_primary:
-                ax_traj.barh(rej_y, prev_p - chance_primary, left=chance_primary,
-                             height=bar_height, color=rejected_light,
-                             edgecolor='none')
-            if cur_p > prev_p:
-                ax_traj.barh(rej_y, cur_p - prev_p, left=prev_p,
-                             height=bar_height, color=rejected_dark,
-                             edgecolor='none')
-            ax_traj.annotate(f"{cur_p:.3f}  (Δ {cur_p - prev_p:+.3f}, ns)", xy=(cur_p, rej_y),
-                             xytext=(_LABEL_OFFSET_PT, 0), textcoords='offset points',
-                             ha='left', va='center', fontsize=7,
-                             color=NEUTRAL_COLOR, style='italic')
-
-    ytick_positions = list(y_positions)
-    ytick_labels = [_label_with_p(f"+{_pretty(d['feature_name'])}", d['p_adjusted']) for d in steps_data]
-    if rejection_row is not None:
-        ytick_positions.append(rej_y)
-        ytick_labels.append(_label_with_p(f"+{_pretty(rejection_row['feature_name'])}",
-                                          _step_test_p_adjusted(selection_steps[-1])))
-    ax_traj.set_yticks(ytick_positions)
-    ax_traj.set_yticklabels(ytick_labels, fontsize=10, color=TEXT_COLOR)
-    ax_traj.tick_params(axis='y', length=0)
-    ax_traj.invert_yaxis()
-
-    if rejection_row is not None:
-        sep_y = (len(steps_data) - 1) + 0.5 + 0.10
-        ax_traj.axhline(sep_y, color=NEUTRAL_COLOR, linestyle='-',
-                        lw=0.4, alpha=0.5, zorder=0)
-
-    # X-axis range / orientation depending on direction.
-    all_endpoints = list(cum_prim)
-    if rejection_row is not None and not np.isnan(rejection_row['prim_mean']):
-        all_endpoints.append(rejection_row['prim_mean'])
-    if is_minimization_primary:
-        span = chance_primary - min(all_endpoints)
-        span = span if span > 1e-9 else 1.0
-        x_left_lim = min(all_endpoints) - 0.30 * span
-        x_right_lim = chance_primary + 0.015 * abs(chance_primary if chance_primary > 0 else 1)
-        ax_traj.set_xlim(x_left_lim, x_right_lim)
-        ax_traj.invert_xaxis()
-    else:
-        span = max(all_endpoints) - chance_primary
-        span = span if span > 1e-9 else 1.0
-        # Pad PROPORTIONALLY to the data span. The old `0.015 * (1.0 if span <
-        # 0.1 ...)` injected a flat 0.015 of dead space whenever the span was
-        # small (e.g. a vm_logscore span of ~0.05), leaving a large empty gap
-        # before the first bar's baseline anchor.
-        x_left_lim = chance_primary - 0.03 * span
-        x_right_lim = max(all_endpoints) + 0.30 * span
-        ax_traj.set_xlim(x_left_lim, x_right_lim)
-
-    ax_traj.set_xlabel(f"{primary_metric_name} (held-out data)",
-                       fontsize=10, color=TEXT_COLOR)
-    ax_traj.spines['top'].set_visible(False)
-    ax_traj.spines['right'].set_visible(False)
-    ax_traj.tick_params(axis='x', colors=TEXT_COLOR)
-    for spine in ax_traj.spines.values():
-        spine.set_edgecolor(TEXT_COLOR)
-
-    # Right panels: each secondary metric's improvement over the step-0 baseline
-    # (chance), via `_draw_secondary_gain_panel` -- best univariate vs the final
-    # (stacked-by-feature) model. Lower-is-better error metrics are flipped so a
-    # positive height always means "better than chance"; a feature that WORSENS the
-    # metric shows as a segment crossing 0. When `secondary_as_pct_of_chance` is set,
-    # the bars are the percent improvement over chance ((chance - value)/chance),
-    # dimensionless and comparable across metrics on very different scales (e.g.
-    # euclidean MAE ~0.35 vs pullback geodesic ~38).
-    _feature_names = [d['feature_name'] for d in steps_data]
-    _feature_labels = [_pretty(d['feature_name']) for d in steps_data]
-    for _ax_sec, (_sec_key, _sec_name) in zip(sec_axes, metrics_secondary, strict=False):
+    # The final model's test-set error, drawn as a last item after the steps
+    # when the run stores its per-event test errors with their sessions and
+    # acoustic regions; it is expressed against the test set's own
+    # intercept-only baseline when the record stores one, and otherwise (pooled
+    # bar only) against the validation step-0 baseline.
+    _heldout_record = next((step['heldout'] for step in reversed(selection_steps)
+                            if 'heldout' in step and step['heldout'] is not None), None)
+    # The run's own region event floor; read only when the record carries the
+    # per-event errors (older artifacts may not record the knob).
+    _min_region_events = (int(selection_metadata['_run_metadata']['extra_knobs']['usv_manifold_min_region_events'])
+                          if _heldout_record is not None and 'per_event_errors' in _heldout_record else None)
+    for _ax_sec, (_sec_key, _sec_name) in zip(sec_axes, metrics_secondary, strict=True):
         _is_min = _sec_key in lower_is_better_set
         _ch = _chance_value(_sec_key, _is_min)
         if not np.isfinite(_ch):
             _ch = 0.0
-        _sec_means = [
-            _fold_mean(s['candidates_summary'][s['selected_feature']]['folds']['metrics'], _sec_key)
-            for s in accepted_steps
-        ]
-        _marginals = [_sec_means[0] - _ch]
-        for _i in range(1, len(_sec_means)):
-            _marginals.append(_sec_means[_i] - _sec_means[_i - 1])
-        _draw_secondary_gain_panel(
-            _ax_sec, sec_means=_sec_means, chance=_ch, is_min=_is_min,
-            marginals=_marginals, feature_names=_feature_names,
-            feature_labels=_feature_labels, category_color=_category_color,
-            sec_name=_sec_name, as_pct=secondary_as_pct_of_chance,
+        _direction = -1.0 if _is_min else 1.0
+        _use_pct = bool(secondary_as_pct_of_chance) and abs(_ch) > 1e-12
+        _scale = (100.0 / _ch) if _use_pct else 1.0
+        # Each fold's improvement over its OWN step-0 baseline (the gate baseline,
+        # listed first in the step-0 block, scored on the same validation
+        # partition), so a fold's value measures the model and not how hard that
+        # partition's sessions are to predict. Pairing needs the step to use the
+        # step-0 folds (identical test indices); otherwise the fold is compared
+        # with the across-fold step-0 mean.
+        _base_folds = None
+        if selection_steps and selection_steps[0]['candidates_summary']:
+            _base_folds = next(iter(selection_steps[0]['candidates_summary'].values()))['folds']
+        _fold_gains = []
+        for s in accepted_steps:
+            _folds = s['candidates_summary'][s['selected_feature']]['folds']
+            _fm = _folds['metrics']
+            _vals = np.array((_fm[_sec_key] if _sec_key in _fm else []), dtype=float)
+            _paired = (_base_folds is not None and _sec_key in _base_folds['metrics']
+                       and 'test_indices' in _folds and 'test_indices' in _base_folds
+                       and len(_folds['test_indices']) == len(_base_folds['test_indices']) == _vals.size
+                       and all(np.array_equal(_a, _b) for _a, _b in zip(_folds['test_indices'],
+                                                                         _base_folds['test_indices'], strict=True)))
+            if _paired:
+                _base_vals = np.array(_base_folds['metrics'][_sec_key], dtype=float)
+                _fold_gains.append(_direction * (_vals - _base_vals)
+                                   * (100.0 / _base_vals if _use_pct else 1.0))
+            else:
+                message_output(f"Step '{s['selected_feature']}' does not share the step-0 folds; "
+                               f"its {_sec_key} folds are compared with the across-fold step-0 mean.")
+                _fold_gains.append(_direction * (_vals - _ch) * _scale)
+        _test_scores = (_test_set_secondary_scores(_heldout_record, _sec_key, 0.5,
+                                                   min_region_events=_min_region_events)
+                        if _heldout_record is not None else None)
+        # The test item against the test set's own baseline: the run's
+        # intercept-only prediction (the development-set circular mean) scored on
+        # the same test events, per session and pooled, so each circle is that
+        # session's improvement over its own baseline.
+        _test_gain_values, _test_gain_pooled = None, None
+        if _test_scores is not None and 'baseline' in _heldout_record:
+            _baseline_record = {
+                'y_true': _heldout_record['y_true'],
+                'session_ids': _heldout_record['session_ids'],
+                'region_labels': _heldout_record['region_labels'],
+                'per_event_errors': _heldout_record['baseline']['per_event_errors'],
+                'metrics': {},
+            }
+            _base_scores = _test_set_secondary_scores(_baseline_record, _sec_key, 0.5,
+                                                      min_region_events=_min_region_events)
+            _test_gain_values = (_direction * (_test_scores[0] - _base_scores[0])
+                                 * (100.0 / _base_scores[0] if _use_pct else 1.0))
+            _test_gain_pooled = (_direction * (_test_scores[1] - _base_scores[1])
+                                 * (100.0 / _base_scores[1] if _use_pct else 1.0))
+        elif _test_scores is not None:
+            # No stored test baseline: the pooled bar alone, against the
+            # validation step-0 baseline (a per-session error against that
+            # cohort baseline mixes the model's gain with how hard each
+            # session's repertoire is to predict).
+            _test_gain_pooled = _direction * (_test_scores[1] - _ch) * _scale
+        else:
+            message_output(f"No per-event test-set record for {_sec_key}; the test item is not drawn.")
+        _draw_step_fold_scatter(
+            _ax_sec,
+            fold_values=_fold_gains,
+            colors=[_category_color(d['feature_name']) for d in steps_data],
+            chance=0.0,
+            ylabel=(f"{_sec_name} improvement (%)" if _use_pct
+                    else (f"Δ {_sec_name} vs baseline" if _test_scores is not None
+                          else f"Δ {_sec_name} vs baseline (validation data)")),
+            test_values=_test_gain_values,
+            test_pooled=_test_gain_pooled,
         )
-
-    fig_traj.subplots_adjust(left=0.18, right=0.97, top=0.95,
-                             bottom=0.12, wspace=0.12)
+    _finish_selection_summary_layout(fig_traj, ax_traj, summary_layout)
 
     if save_plot:
         if output_dir is None:
@@ -4525,113 +4587,6 @@ def plot_manifold_selection_trajectory(
         message_output(f"Manifold trajectory plot saved to: {save_path}")
 
     return fig_traj
-
-
-def _draw_secondary_gain_panel(ax, *, sec_means, chance, is_min, marginals,
-                               feature_names, feature_labels, category_color,
-                               sec_name, as_pct):
-    """
-    Description
-    -----------
-    Draw one secondary-metric gain panel for a manifold selection trajectory:
-    two bar groups -- the best-univariate (anchor) model and the final stacked
-    model -- each showing improvement over the chance baseline.
-
-    Lower-is-better error metrics are flipped (via ``is_min``) so a positive bar
-    always means "better than chance"; a feature that worsens the metric shows as
-    a segment crossing 0. With ``as_pct`` the bars are the percent improvement over
-    chance ``(chance - value) / chance`` (requires a non-zero ``chance``), which is
-    dimensionless and comparable across metrics on very different scales; otherwise
-    they are the raw ``value - chance`` difference.
-
-    Parameters
-    ----------
-    ax (matplotlib.axes.Axes)
-        Target axis to draw into.
-    sec_means (list of float)
-        Cumulative held-out metric mean after each accepted step, in order.
-    chance (float)
-        The step-0 null-model baseline for this metric.
-    is_min (bool)
-        True if the metric is lower-is-better (its sign is flipped so "better" is
-        positive).
-    marginals (list of float)
-        Per-step marginal change (first entry vs ``chance``); sums to the final
-        model's total change. One entry per accepted feature.
-    feature_names (list of str)
-        Raw feature names (for per-feature colour), in step order.
-    feature_labels (list of str)
-        Display labels for the stacked segments, in step order.
-    category_color (callable)
-        ``fname -> hex colour`` mapping (self / other / dyadic palette).
-    sec_name (str)
-        Display name of the metric (used in the y-axis label).
-    as_pct (bool)
-        Render as percent improvement over chance (see above).
-
-    Returns
-    -------
-    None
-    """
-    _dir = -1.0 if is_min else 1.0
-    use_pct = bool(as_pct) and abs(chance) > 1e-12
-    scale = (100.0 / chance) if use_pct else 1.0
-    anchor_gain = _dir * (sec_means[0] - chance) * scale
-    final_gain = _dir * (sec_means[-1] - chance) * scale
-    seg_gains = [_dir * m * scale for m in marginals]
-
-    # Value extents. The stacked bar runs through its cumulative sum (which starts
-    # at 0). If every drawn value is >= 0, the panel starts exactly at 0 with no
-    # separate zero line -- the x-axis IS the baseline; only a panel that actually
-    # dips below chance gets the negative region plus a 0 reference line.
-    _stack_cum = (np.concatenate([[0.0], np.cumsum(seg_gains)])
-                  if seg_gains else np.array([0.0]))
-    _gmax = float(max(anchor_gain, final_gain, _stack_cum.max()))
-    _gmin = float(min(anchor_gain, final_gain, _stack_cum.min()))
-    has_negative = _gmin < -1e-9
-    _gspan = (_gmax - _gmin) if (_gmax - _gmin) > 1e-9 else 1.0
-
-    bar_width = 0.6
-    _x_final = 1.6
-    ax.bar(0, anchor_gain, width=bar_width, edgecolor='none', zorder=3,
-           color=(category_color(feature_names[0]) if feature_names else NEUTRAL_COLOR))
-    _bottom = 0.0
-    _seg_labels = []
-    for _i, (_fname, _flabel, _seg) in enumerate(zip(feature_names, feature_labels, seg_gains, strict=False)):
-        _col = category_color(_fname)
-        ax.bar(_x_final, _seg, bottom=_bottom, width=bar_width,
-               zorder=3 + (len(seg_gains) - _i),
-               color=_col, edgecolor='#FFFFFF', linewidth=0.5)
-        _seg_labels.append((_bottom + _seg / 2.0, _flabel, _col))
-        _bottom += _seg
-    if has_negative:
-        ax.axhline(0.0, color=TEXT_COLOR, lw=0.8, zorder=2)
-
-    for _y, _name, _col in _seg_labels:
-        ax.text(_x_final + 0.34, _y, _name, ha='left', va='center',
-                fontsize=7, color=_col)
-
-    for _x, _g in ((0, anchor_gain), (_x_final, final_gain)):
-        _txt = f"{_g:+.1f}%" if use_pct else f"{_g:+.3f}"
-        ax.text(_x, _g + (0.03 * _gspan if _g >= 0 else -0.03 * _gspan), _txt,
-                ha='center', va='bottom' if _g >= 0 else 'top',
-                fontsize=8, color=TEXT_COLOR)
-
-    if has_negative:
-        ax.set_ylim(_gmin - 0.12 * _gspan, _gmax + 0.20 * _gspan)
-    else:
-        ax.set_ylim(0.0, _gmax + 0.20 * _gspan)
-    ax.set_xticks([0, _x_final])
-    ax.set_xticklabels(['best univariate', 'final model'], fontsize=8, color=TEXT_COLOR)
-    ax.set_xlim(-0.7, _x_final + 2.2)
-    _ylab = (f"{sec_name} improvement (%)" if use_pct
-             else f"Δ {sec_name} vs baseline (held-out)")
-    ax.set_ylabel(_ylab, fontsize=10, color=TEXT_COLOR)
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
-    ax.tick_params(axis='both', colors=TEXT_COLOR)
-    for spine in ax.spines.values():
-        spine.set_edgecolor(TEXT_COLOR)
 
 
 def _extract_manifold_final_bivariate_weights(selection_results_path,
