@@ -679,9 +679,12 @@ def tuning_data(unit_uid: str, paths: FigurePaths, identity: dict, encoding: dic
     vocal_frames = {}
     block = transfer_block(encoding, settings)
     for session_id in encoding["transfer_session_ids"]:
+        # Each session's own frame rate, as the pipeline uses: a unit's sessions can differ by a fraction of a
+        # frame per second, which moves a few USV edges by one frame.
+        session_fps = float(per_session[session_id]["fps"])
         frames, pointer, _ = focal_vocal_frames(per_session[session_id], session_id, str(paths.data_root),
-                                                identity["mouse_id"], fps, n_lags, vocalization)
-        vocal_frames[session_id] = transfer_frames(frames, pointer, fps, per_session[session_id]["n_frames"],
+                                                identity["mouse_id"], session_fps, n_lags, vocalization)
+        vocal_frames[session_id] = transfer_frames(frames, pointer, session_fps, per_session[session_id]["n_frames"],
                                                    n_lags, per_session[session_id]["quiet"],
                                                    settings["kinematic_encoding"]["clean_post_seconds"], block)
     vocal = predictor_outputs(per_session, vocal_frames, features, filters, intercept, n_lags)
@@ -820,9 +823,10 @@ def rate_trace_data(unit_uid: str, paths: FigurePaths, identity: dict, encoding:
     vocal, etas, labels, groups = [], [], [], []
     for index, session_id in enumerate(identity["courtship_sessions"]):
         other = per_session[session_id]
-        span, pointer, _ = focal_vocal_frames(other, session_id, str(paths.data_root), identity["mouse_id"], fps, n_lags,
-                                              vocalization)
-        frames = np.sort(transfer_frames(span, pointer, fps, int(other["n_frames"]), n_lags,
+        session_fps = float(other["fps"])
+        span, pointer, _ = focal_vocal_frames(other, session_id, str(paths.data_root), identity["mouse_id"],
+                                              session_fps, n_lags, vocalization)
+        frames = np.sort(transfer_frames(span, pointer, session_fps, int(other["n_frames"]), n_lags,
                                          np.asarray(other["quiet"]),
                                          settings["kinematic_encoding"]["clean_post_seconds"],
                                          transfer_block(encoding, settings)))
@@ -3135,7 +3139,8 @@ def category_nested_event_data(unit_uid: str, paths: FigurePaths, identity: dict
                                         window["pre_offset_seconds"], window["width_seconds"])
     per_session = assemble_unit_sessions(identity, str(paths.data_root), settings["kinematic_features"],
                                          kinematic["history_pre_seconds"], kinematic["clean_post_seconds"],
-                                         vocalization["clean_against"], vocalization)
+                                         vocalization["clean_against"], vocalization,
+                                         standardise="per_session")
     fps = float(per_session[identity["courtship_sessions"][0]]["fps"])
     design = nested_design(events, per_session, reduced_model_features(settings, "multinomial"),
                            int(np.floor(kinematic["history_pre_seconds"] * fps)), nested["sigma_floor"])
