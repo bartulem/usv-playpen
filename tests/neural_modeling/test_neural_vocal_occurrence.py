@@ -7,7 +7,10 @@ rates and the equal-prior posterior, the class-balanced leave-one-session-out de
 block-jitter null. The properties asserted are the ones the design turns on -- tiles never overlap a
 guarded USV, a held-out window never sets its own quiet level, the gain does not depend on how many quiet
 tiles were drawn and is bounded by log 2, it is sign-free so suppressed units are not penalised, the null
-recounts both classes and refits, and a slow rate trend shared with the USVs' timing does not pass.
+recounts both classes and refits, and a slow rate trend shared with the USVs' timing does not pass. The
+blocks of a unit recorded in one session share one recording: a held-out block is scored at the level of
+its recording's training blocks, and a null draw recounts every block from one surrogate of the shared
+spike train.
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ from usv_playpen.neural_modeling.neural_vocal_occurrence import (
     onset_behaviour_tilts,
     onset_log_prior,
     quiet_tile_edges,
+    score_split,
     session_quiet_levels,
     vocal_occurrence_jitter_null,
     vocal_occurrence_statistic,
@@ -204,6 +208,72 @@ class TestQuietLevels:
         after = held_out_quiet_levels(changed, labels, times, rows, 5, 1e-3)
         np.testing.assert_allclose(after[:20], before[:20])
         assert np.all(after[20:] > before[20:])
+
+
+class TestBlocksShareTheirRecording:
+    """The blocks of a unit recorded in one session share one quiet level and one surrogate spike train."""
+
+    def test_a_held_out_block_is_scored_at_its_recordings_training_level(self):
+        """
+        Description
+        -----------
+        With three blocks of one recording, the training level is one value over the training blocks'
+        quiet tiles, and the held-out block's windows are scored at exactly that level: scaling the
+        held-out block's own quiet counts must leave its gains unchanged, which a level read from the
+        block itself would not.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        counts, labels, blocks, times = _unit(1.5, n_sessions=3, seed=21)
+        recording = np.zeros(counts.size, dtype=np.int64)
+        train, test = np.flatnonzero(blocks != 0), np.flatnonzero(blocks == 0)
+        levels = session_quiet_levels(counts, labels, recording, train, 1e-3)
+        np.testing.assert_allclose(levels, np.mean(counts[train][labels[train] < 0.5]))
+        gain, _probability, _rates = score_split(counts, labels, recording, times, train, test, 1.0, 0.02, 1e-3, 5)
+        louder = counts.copy()
+        quiet_test = test[labels[test] < 0.5]
+        louder[quiet_test] = louder[quiet_test] + 3.0
+        level_only = score_split(louder, labels, recording, times, train, test, 1.0, 0.02, 1e-3, 5)[0]
+        own = labels[test] > 0.5
+        np.testing.assert_allclose(level_only[own], gain[own])
+
+    def test_one_surrogate_per_recording_is_recounted_in_every_block(self):
+        """
+        Description
+        -----------
+        Two block slots of one recording carry the same spike train; a jitter draw must recount both
+        from one surrogate, so the null equals that of one slot holding every window.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        counts, labels, sessions, times = _unit(1.0, n_sessions=2, n_positive=40, n_negative=40)
+        duration = float(times.max() + 10.0)
+        train = np.sort(np.random.default_rng(4).uniform(0.0, duration, 400))
+        recording = np.zeros(counts.size, dtype=np.int64)
+        as_blocks = {"counts": counts, "labels": labels, "session_index": sessions, "recording_index": recording,
+                     "edges": times, "width": 0.5}
+        folds = occurrence_context(labels, sessions, times, 5)
+        blocked = vocal_occurrence_jitter_null(as_blocks, {0: train, 1: train}, {0: duration, 1: duration}, 0, 3,
+                                               9, 2.0, folds, AXIS, CROSSFIT)
+        generator_values = []
+        for draw in range(3):
+            surrogate = block_jitter_spike_times(train, duration, 2.0, np.random.default_rng(9 + draw))
+            drawn = counts_in_windows(surrogate, times, 0.5)
+            generator_values.append(vocal_occurrence_statistic(drawn, labels, recording, times, folds, AXIS,
+                                                               CROSSFIT)["gain"])
+        np.testing.assert_allclose(blocked, generator_values)
 
 
 class TestRatesAndPosterior:
@@ -417,7 +487,8 @@ class TestVocalOccurrenceJitterNull:
             sessions.append(np.full(window_edges.size, slot))
             edges.append(window_edges)
         windows = {"counts": np.concatenate(counts), "labels": np.concatenate(labels),
-                   "session_index": np.concatenate(sessions), "edges": np.concatenate(edges), "width": width}
+                   "session_index": np.concatenate(sessions), "recording_index": np.concatenate(sessions),
+                   "edges": np.concatenate(edges), "width": width}
         return windows, spikes, durations
 
     def _null(self, windows, spikes, durations, start, n_draws, seed=7):
@@ -530,7 +601,8 @@ class TestVocalOccurrenceJitterNull:
             sessions.append(np.full(window_edges.size, slot))
             edges.append(window_edges)
         windows = {"counts": np.concatenate(counts), "labels": np.concatenate(labels),
-                   "session_index": np.concatenate(sessions), "edges": np.concatenate(edges), "width": width}
+                   "session_index": np.concatenate(sessions), "recording_index": np.concatenate(sessions),
+                   "edges": np.concatenate(edges), "width": width}
         folds = occurrence_context(windows["labels"], windows["session_index"], windows["edges"], 5)
         observed = self._score(windows, windows["counts"])
         shift_null = np.empty(40)
@@ -614,7 +686,8 @@ class TestOnsetPrior:
         counts, labels, sessions, times = _unit(1.0, n_sessions=2, n_positive=40, n_negative=40)
         generator = np.random.default_rng(4)
         duration = float(times.max() + 10.0)
-        windows = {"counts": counts, "labels": labels, "session_index": sessions, "edges": times, "width": 0.5}
+        windows = {"counts": counts, "labels": labels, "session_index": sessions, "recording_index": sessions,
+                   "edges": times, "width": 0.5}
         trains = {slot: np.sort(generator.uniform(0.0, duration, 400)) for slot in (0, 1)}
         durations = {0: duration, 1: duration}
         folds = occurrence_context(labels, sessions, times, 5)

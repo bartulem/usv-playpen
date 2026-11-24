@@ -348,9 +348,45 @@ def inner_rotation_splits(train_sessions: list, rows_by_session: dict, event_tim
              np.sort(blocks[held])) for held in range(len(blocks))]
 
 
+def same_recording_rows(recording_index: np.ndarray, train_rows: np.ndarray, test_rows: np.ndarray) -> np.ndarray:
+    """
+    Description
+    -----------
+    The training rows that belong to the scored rows' own recording session, which then sets the scored
+    rows' level; empty when there are none.
+
+    A held-out session's level is unknown to a fit on other sessions, so it is read from the scored
+    events themselves. A held-out block of a unit recorded in one session is different: the fit used the
+    other blocks of the same recording, so the session's level is already known from them, and reading a
+    level off the block alone would give one part of the session a level of its own. The same holds for
+    an inner split that holds out a block of a single training session.
+
+    Parameters
+    ----------
+    recording_index (np.ndarray)
+        Recording session per event.
+    train_rows (np.ndarray)
+        The rows the scoring fit used.
+    test_rows (np.ndarray)
+        The scored rows, all from one session or block.
+
+    Returns
+    -------
+    rows (np.ndarray)
+        Training rows of the scored rows' recording, or an empty array.
+    """
+
+    recording_index = np.asarray(recording_index)
+    test_recordings = np.unique(recording_index[np.asarray(test_rows, dtype=np.int64)])
+    if test_recordings.size != 1:
+        return np.empty(0, dtype=np.int64)
+    train_rows = np.asarray(train_rows, dtype=np.int64)
+    return train_rows[recording_index[train_rows] == test_recordings[0]]
+
+
 def decoding_context(positions: np.ndarray, session_index: np.ndarray, settings: dict,
                      period: float, event_times: np.ndarray | None = None,
-                     single_session_blocks: int = 0) -> list:
+                     single_session_blocks: int = 0, recording_index: np.ndarray | None = None) -> list:
     """
     Description
     -----------
@@ -362,6 +398,11 @@ def decoding_context(positions: np.ndarray, session_index: np.ndarray, settings:
     positions; the prior and mask stay built from the real training positions. Each fold also carries
     the inner splits used to tune the amplitude calibration (:func:`inner_rotation_splits`):
     leave-one-training-session-out, or contiguous blocks of a fold's single training session.
+
+    Every session-level quantity belongs to a recording session (``recording_index``): the exposure
+    offsets of the fit, and the level a scored session or block is decoded at. A fold therefore also
+    carries, for its held-out rows and for every inner split, the training rows of the scored rows' own
+    recording (:func:`same_recording_rows`), which set the level of a held-out block.
 
     The occupancy mask is a decode-time gate: the posterior places no mass where no training USV
     occurred, and events whose true position is masked are excluded and counted.
@@ -383,11 +424,16 @@ def decoding_context(positions: np.ndarray, session_index: np.ndarray, settings:
         without inner splits.
     single_session_blocks (int)
         Blocks a single training session is cut into (``cohort.single_session_blocks``).
+    recording_index (np.ndarray | None)
+        Recording session per event (``events["recording_index"]``); None treats every session as its
+        own recording, which is exact for a unit recorded in several sessions.
 
     Returns
     -------
     folds (list)
-        One dict per held-out session.
+        One dict per held-out session, with ``train_recording_index`` (recording per training row),
+        ``level_rows`` (training rows of the held-out rows' recording) and ``inner_level_rows`` (the same
+        for each inner split) beside the geometry.
     """
 
     surface = settings["tuning_surface"]
@@ -405,6 +451,7 @@ def decoding_context(positions: np.ndarray, session_index: np.ndarray, settings:
         msg = f"the decoder needs at least two sessions; got {sessions.size}."
         raise ValueError(msg)
     rows_by_session = {int(s): np.flatnonzero(session_index == s) for s in sessions}
+    recording = np.asarray(session_index if recording_index is None else recording_index)
 
     ix = np.clip(np.floor(positions[:, 0] / period * grid_n), 0, grid_n - 1).astype(int)
     iy = np.clip(np.floor(positions[:, 1] / period * grid_n), 0, grid_n - 1).astype(int)
@@ -438,9 +485,14 @@ def decoding_context(positions: np.ndarray, session_index: np.ndarray, settings:
         inner_splits = inner_rotation_splits(train_sessions, rows_by_session, event_times,
                                              single_session_blocks)
 
+        test_rows = rows_by_session[int(held_out)]
         folds.append({"held_out": int(held_out), "train_sessions": train_sessions,
-                      "train_rows": train_rows, "test_rows": rows_by_session[int(held_out)],
+                      "train_rows": train_rows, "test_rows": test_rows,
                       "train_session_index": np.asarray(session_index)[train_rows],
+                      "train_recording_index": recording[train_rows],
+                      "level_rows": same_recording_rows(recording, train_rows, test_rows),
+                      "inner_level_rows": [same_recording_rows(recording, inner_train, inner_test)
+                                           for inner_train, inner_test in inner_splits],
                       "event_basis": event_basis, "grid_basis": grid_basis,
                       "log_prior": np.log(np.clip(masked_prior, 1e-300, None)),
                       "masked_prior": masked_prior, "mask": mask,
@@ -470,7 +522,8 @@ def surface_rate(beta: np.ndarray, fold: dict, alpha: float, scored_counts: np.n
     alpha (float)
         Amplitude scaling of the surface shape; ``>= 0``.
     scored_counts (np.ndarray)
-        Spike counts of the events being scored; their mean sets the level.
+        Spike counts whose mean sets the level: the scored events of a held-out session, or the training
+        events of a held-out block's recording.
 
     Returns
     -------
@@ -489,7 +542,7 @@ def surface_rate(beta: np.ndarray, fold: dict, alpha: float, scored_counts: np.n
 
 def score_events(beta: np.ndarray, rows: np.ndarray, counts: np.ndarray, fold: dict,
                  truth_cell: np.ndarray, alpha: float, with_detail: bool = False,
-                 log_prior_events: np.ndarray | None = None):
+                 log_prior_events: np.ndarray | None = None, level_rows: np.ndarray | None = None):
     """
     Description
     -----------
@@ -501,8 +554,10 @@ def score_events(beta: np.ndarray, rows: np.ndarray, counts: np.ndarray, fold: d
     neuron adds beyond it; nothing else changes.
 
     The surface is split into a shape, centred on its prior-weighted mean and scaled by ``alpha``, and
-    a level, read from the scored session's own mean count (a single number with no position
-    information). Events whose true position is masked return NaN.
+    a level: the scored session's mean count (a single number with no position information), read from
+    the scored events of a held-out session, or from ``level_rows`` -- the training events of the same
+    recording -- for a held-out block, so one session has one level. Events whose true position is
+    masked return NaN.
 
     Parameters
     ----------
@@ -525,6 +580,9 @@ def score_events(beta: np.ndarray, rows: np.ndarray, counts: np.ndarray, fold: d
         ``(n_events, n_cells)`` log prior density per event over the fold's grid, already masked and
         normalised, indexed in the order counts are paired with; or None for the fold's shared
         occupancy prior. The gain is measured against the prior the posterior was formed with.
+    level_rows (np.ndarray | None)
+        Training rows of the scored rows' recording (:func:`same_recording_rows`), whose mean count sets
+        the level; None or empty reads it from the scored rows.
 
     Returns
     -------
@@ -534,7 +592,9 @@ def score_events(beta: np.ndarray, rows: np.ndarray, counts: np.ndarray, fold: d
     """
 
     scored_counts = counts[rows]
-    rate = surface_rate(beta, fold, alpha, scored_counts)
+    level_counts = (counts[np.asarray(level_rows, dtype=np.int64)]
+                    if level_rows is not None and np.size(level_rows) else scored_counts)
+    rate = surface_rate(beta, fold, alpha, level_counts)
     log_rate = np.log(np.clip(rate, 1e-12, None))
 
     loglik = (scored_counts[:, None] * log_rate[None, :] - rate[None, :]
@@ -627,22 +687,24 @@ def tuned_amplitude(counts: np.ndarray, fold: dict, basis: np.ndarray, truth_cel
     if not fold["inner_splits"]:
         return float(min(alpha_grid, key=lambda a: abs(a - 1.0)))
 
-    session_labels = np.asarray(fold["train_session_index"])
+    # Exposure offsets per recording session, so the blocks of one recording share one.
+    recording_labels = np.asarray(fold["train_recording_index"])
     inner_betas = []
-    for inner_train, inner_test in fold["inner_splits"]:
+    for (inner_train, inner_test), level_rows in zip(fold["inner_splits"], fold["inner_level_rows"], strict=True):
         offsets = (session_exposure_offsets(counts[inner_train],
-                                            session_labels[np.isin(fold["train_rows"], inner_train)])
+                                            recording_labels[np.isin(fold["train_rows"], inner_train)])
                    if session_rate_offsets else None)
         inner_betas.append((poisson_tuning_fit(basis[inner_train], counts[inner_train], ridge,
-                                               n_steps, offsets), inner_test))
+                                               n_steps, offsets), inner_test, level_rows))
 
     # The fallback, when no inner score is finite, is the grid point nearest 1.0 (no recalibration), as
     # the other tuners do.
     best_alpha, best_gain = float(min(alpha_grid, key=lambda value: abs(float(value) - 1.0))), -np.inf
     for candidate in alpha_grid:
         scores = [finite_mean(score_events(beta, inner_test, counts, fold, truth_cell,
-                                           float(candidate), log_prior_events=log_prior_events))
-                  for beta, inner_test in inner_betas]
+                                           float(candidate), log_prior_events=log_prior_events,
+                                           level_rows=level_rows))
+                  for beta, inner_test, level_rows in inner_betas]
         mean_gain = finite_mean(np.asarray(scores))
         if mean_gain > best_gain:
             best_gain, best_alpha = mean_gain, float(candidate)
@@ -659,8 +721,9 @@ def decode_gain(counts: np.ndarray, folds: list, settings: dict,
     configuration fixes applied in one pass.
 
     Per outer fold the ridge is set from that fold's training spike total, the amplitude is tuned by
-    inner leave-one-session-out, the surface is refitted with per-session exposure offsets, and the
-    held-out session's events are scored. The identical procedure runs on every permuted draw. The
+    inner leave-one-session-out, the surface is refitted with per-recording-session exposure offsets,
+    and the held-out session's events are scored, at the level of the held-out session itself or, for a
+    held-out block, of its recording's training blocks. The identical procedure runs on every permuted draw. The
     gain is also the effect size; the pass rule is applied at the cohort step.
 
     Parameters
@@ -740,27 +803,30 @@ def decode_gain(counts: np.ndarray, folds: list, settings: dict,
 
         alpha = tuned_amplitude(counts, fold, basis, truth_cell, ridge, alpha_grid, n_steps,
                                 surface["session_rate_offsets"], log_prior_events=prior)
-        offsets = (session_exposure_offsets(counts[train_rows], fold["train_session_index"])
+        offsets = (session_exposure_offsets(counts[train_rows], fold["train_recording_index"])
                    if surface["session_rate_offsets"] else None)
         beta = poisson_tuning_fit(basis[train_rows], counts[train_rows], ridge, n_steps, offsets)
+        level_rows = fold["level_rows"]
 
         if with_detail:
             fold_gains, fold_detail = score_events(beta, test_rows, counts, fold, truth_cell, alpha,
-                                                   with_detail=True, log_prior_events=prior)
+                                                   with_detail=True, log_prior_events=prior,
+                                                   level_rows=level_rows)
             calibrated[test_rows] = fold_gains
             decode_error[test_rows] = fold_detail["decode_error"]
             posterior_entropy[test_rows] = fold_detail["posterior_entropy"]
             decoded_positions[test_rows] = fold_detail["decoded"]
             # Pearson dispersion of the held-out counts around the calibrated rate at each event's
             # cell: a check on the Poisson likelihood (about 1 for an untuned Poisson unit)
-            expected = surface_rate(beta, fold, alpha, counts[test_rows])[truth_cell[test_rows]]
+            expected = surface_rate(beta, fold, alpha,
+                                    counts[level_rows] if level_rows.size else counts[test_rows])[truth_cell[test_rows]]
             dispersion.append(float(np.mean((counts[test_rows] - expected) ** 2
                                             / np.clip(expected, 1e-9, None))))
         else:
             calibrated[test_rows] = score_events(beta, test_rows, counts, fold, truth_cell, alpha,
-                                                 log_prior_events=prior)
+                                                 log_prior_events=prior, level_rows=level_rows)
         uncalibrated[test_rows] = score_events(beta, test_rows, counts, fold, truth_cell, 1.0,
-                                               log_prior_events=prior)
+                                               log_prior_events=prior, level_rows=level_rows)
         fold_masked = int(np.sum(~fold["mask"][truth_cell[test_rows]]))
         n_masked += fold_masked
         per_fold.append({"held_out": fold["held_out"], "n_events": int(test_rows.size),
@@ -802,7 +868,7 @@ def decode_gain(counts: np.ndarray, folds: list, settings: dict,
 
 def bump_basis_gain(counts: np.ndarray, positions: np.ndarray, session_index: np.ndarray,
                     settings: dict, period: float, event_times: np.ndarray | None = None,
-                    single_session_blocks: int = 0) -> float:
+                    single_session_blocks: int = 0, recording_index: np.ndarray | None = None) -> float:
     """
     Description
     -----------
@@ -830,6 +896,9 @@ def bump_basis_gain(counts: np.ndarray, positions: np.ndarray, session_index: np
         of a fold with a single training session; ``None`` leaves such a fold without them.
     single_session_blocks (int)
         Blocks a single training session is cut into (``cohort.single_session_blocks``).
+    recording_index (np.ndarray | None)
+        Recording session per event, passed to :func:`decoding_context`; None treats every session as its
+        own recording.
 
     Returns
     -------
@@ -838,12 +907,12 @@ def bump_basis_gain(counts: np.ndarray, positions: np.ndarray, session_index: np
     """
 
     return float(basis_context(positions, session_index, settings, "bumps", period, event_times,
-                               single_session_blocks)[1](counts)["gain"])
+                               single_session_blocks, recording_index)[1](counts)["gain"])
 
 
 def basis_context(positions: np.ndarray, session_index: np.ndarray, settings: dict,
                   basis: str, period: float, event_times: np.ndarray | None = None,
-                  single_session_blocks: int = 0) -> tuple:
+                  single_session_blocks: int = 0, recording_index: np.ndarray | None = None) -> tuple:
     """
     Description
     -----------
@@ -870,6 +939,9 @@ def basis_context(positions: np.ndarray, session_index: np.ndarray, settings: di
         of a fold with a single training session; ``None`` leaves such a fold without them.
     single_session_blocks (int)
         Blocks a single training session is cut into (``cohort.single_session_blocks``).
+    recording_index (np.ndarray | None)
+        Recording session per event, passed to :func:`decoding_context`; None treats every session as its
+        own recording.
 
     Returns
     -------
@@ -883,7 +955,8 @@ def basis_context(positions: np.ndarray, session_index: np.ndarray, settings: di
         raise ValueError(msg)
     local = copy.deepcopy(settings)
     local["tuning_surface"]["tuning_basis"] = basis
-    folds = decoding_context(positions, session_index, local, period, event_times, single_session_blocks)
+    folds = decoding_context(positions, session_index, local, period, event_times, single_session_blocks,
+                             recording_index)
 
     def score(counts: np.ndarray, permutation: np.ndarray = None,
               with_detail: bool = False) -> dict:
@@ -967,7 +1040,8 @@ def left_tail_anti_alignment(null: np.ndarray, observed: float) -> dict:
 
 def flagged_descriptors(counts: np.ndarray, positions: np.ndarray, session_index: np.ndarray,
                         settings: dict, period: float, observed_gain: float, null: np.ndarray,
-                        event_times: np.ndarray | None = None, single_session_blocks: int = 0) -> dict:
+                        event_times: np.ndarray | None = None, single_session_blocks: int = 0,
+                        recording_index: np.ndarray | None = None) -> dict:
     """
     Description
     -----------
@@ -997,6 +1071,9 @@ def flagged_descriptors(counts: np.ndarray, positions: np.ndarray, session_index
         of a fold with a single training session; ``None`` leaves such a fold without them.
     single_session_blocks (int)
         Blocks a single training session is cut into (``cohort.single_session_blocks``).
+    recording_index (np.ndarray | None)
+        Recording session per event, passed to :func:`decoding_context`; None treats every session as its
+        own recording.
 
     Returns
     -------
@@ -1009,7 +1086,7 @@ def flagged_descriptors(counts: np.ndarray, positions: np.ndarray, session_index
     out: dict = {}
     if settings["tuning_surface"]["record_bump_basis_gain"]:
         out["bump_basis_gain"] = bump_basis_gain(counts, positions, session_index, settings, period, event_times,
-                                                 single_session_blocks)
+                                                 single_session_blocks, recording_index)
     if settings["discrimination_null"]["record_left_tail_anti_alignment"]:
         out.update(left_tail_anti_alignment(null, observed_gain))
     return out

@@ -23,13 +23,17 @@ import numpy as np
 import pytest
 
 from usv_playpen.neural_modeling.deviance_metrics import (
+    frozen_model_score,
     pooled_poisson_explained_deviance,
 )
 from usv_playpen.neural_modeling.kinematic_encoding import (
     FrameFilterModel,
     linear_predictor_at_frames,
 )
-from usv_playpen.neural_modeling.neural_design_assembly import quiet_anchor_frames
+from usv_playpen.neural_modeling.neural_design_assembly import (
+    quiet_anchor_frames,
+    spike_labels_at_frames,
+)
 from usv_playpen.neural_modeling.quiet_to_vocal_transfer import (
     bin_frame_matrix,
     combine_folds,
@@ -37,6 +41,10 @@ from usv_playpen.neural_modeling.quiet_to_vocal_transfer import (
     pooled_transfer_null,
     score_fold,
     transfer_frames,
+)
+from usv_playpen.neural_modeling.shift_null_inference import (
+    sample_circular_shift,
+    shifted_spike_frames,
 )
 
 FPS = 100.0
@@ -403,6 +411,59 @@ class TestCountGrainCombine:
         blocked = null_with(total_frames * 8 * 3 / (1024 * 1024))
         assert whole.shape == (10,)
         np.testing.assert_allclose(blocked, whole)
+
+
+class TestBlocksShareTheirRecording:
+    """The blocks of a unit recorded in one session share one transfer intercept and one shift per draw."""
+
+    def test_two_blocks_are_one_calibration_group_and_one_shift(self):
+        """
+        Description
+        -----------
+        Two blocks of one session, scored on disjoint transfer frames, must give the score of the same
+        frames as one group, and every null draw must shift both blocks by the one lag drawn for their
+        recording.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        session = TestCountGrainCombine._session(10, True)
+        sessions = {"s#block0": session, "s#block1": session}
+        frames = {"s#block0": np.arange(1500, 3000), "s#block1": np.arange(3500, 5500)}
+        filters = np.zeros(TestCountGrainCombine.N_LAGS)
+        filters[-1] = 1.2
+        model = FrameFilterModel(filters, -2.0, True, 1)
+        transfer = {**TRANSFER, "grain": "frame", "universe": "usv_span"}
+        calibration = {"scheme": "crossfit", "n_blocks": 5}
+        encoding = {"chunk_rows": 2000, "solver": {"calibration_steps": 30}, "transfer": transfer,
+                    "calibration": calibration, "null_block_megabytes": 32}
+        settings = {"kinematic_encoding": encoding,
+                    "inference": {"n_shuffles": 5, "shuffle_guard_seconds": 1.0, "shuffle_seed": 0,
+                                  "escalation_ladder": []}}
+        ids = list(sessions)
+        results = [score_fold(model, sessions[sid], [0], frames[sid], TestCountGrainCombine.N_LAGS, 0.1,
+                              encoding, linear_predictor_at_frames, transfer) for sid in ids]
+        eta = np.concatenate([result["eta"] for result in results])
+        labels = np.concatenate([result["labels"] for result in results])
+        out = combine_folds(results, sessions, ids, frames, settings, message_output=lambda *_a: None)
+        expected = frozen_model_score(eta, labels, np.zeros(eta.size, dtype=np.int64), 30, "bernoulli", 1.0,
+                                      calibration)[0]
+        assert out["score"] == pytest.approx(expected, rel=1e-12)
+
+        null = pooled_transfer_null(results, sessions, ids, frames, 4, 7, 1.0, 30, transfer, calibration, 64.0)
+        replay = np.random.default_rng(7)
+        for draw in range(4):
+            shift = sample_circular_shift(replay, session["n_frames"], session["fps"], 1.0)
+            shifted = shifted_spike_frames(session["spike_frames"], shift, session["fps"], session["n_frames"])
+            drawn = np.concatenate([spike_labels_at_frames(shifted, frames[sid], session["n_frames"]) for sid in ids])
+            assert null[draw] == pytest.approx(
+                frozen_model_score(eta, drawn, np.zeros(eta.size, dtype=np.int64), 30, "bernoulli", 1.0,
+                                   calibration)[0], rel=1e-12)
 
 
 class TestShippedTransferSettings:

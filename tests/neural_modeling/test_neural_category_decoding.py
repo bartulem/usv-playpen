@@ -254,6 +254,60 @@ class TestGain:
         assert r["min_leave_one_fold_out"] <= max(f["gain"] for f in r["per_fold"]) + 1e-9
 
 
+class TestBlocksShareTheirRecording:
+    """A held-out block of a unit recorded in one session is decoded at its recording's level."""
+
+    def test_a_held_out_blocks_level_is_its_recordings_training_level(self):
+        """
+        Description
+        -----------
+        With three blocks of one recording, every fold's level rows are its training rows, so raising the
+        held-out block's counts by a constant moves its decoded gains through the counts alone; with each
+        block its own session, its level rises with it and the gains come out different.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        counts, labels, blocks = _synthetic(strength=4.0, seed=3)
+        one_recording = np.zeros(blocks.size, dtype=np.int64)
+        folds = category_context(labels, blocks, None, 0, one_recording)
+        for fold in folds:
+            np.testing.assert_array_equal(fold["level_rows"], fold["train_rows"])
+        as_sessions = category_context(labels, blocks)
+        assert all(fold["level_rows"].size == 0 for fold in as_sessions)
+        louder = counts.copy()
+        louder[blocks == 0] += 2.0
+        block_gain = category_gain(louder, labels, folds, SETTINGS)["per_fold"][0]["gain"]
+        session_gain = category_gain(louder, labels, as_sessions, SETTINGS)["per_fold"][0]["gain"]
+        assert block_gain != session_gain
+
+    def test_sessions_alone_decode_as_before(self):
+        """
+        Description
+        -----------
+        For a unit recorded in several sessions the recording index is the session index, and passing it
+        must leave the gain exactly as without it.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        counts, labels, session = _synthetic(strength=4.0, seed=4)
+        without = category_gain(counts, labels, category_context(labels, session), SETTINGS)["gain"]
+        with_index = category_gain(counts, labels, category_context(labels, session, None, 0, session),
+                                   SETTINGS)["gain"]
+        assert with_index == without
+
+
 class TestSilentSessions:
     """A unit that never fires in a held-out session must score ZERO there, not NaN.
 

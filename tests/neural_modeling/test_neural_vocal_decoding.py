@@ -36,6 +36,7 @@ from usv_playpen.neural_modeling.neural_vocal_decoding import (
     inner_rotation_splits,
     left_tail_anti_alignment,
     poisson_tuning_fit,
+    same_recording_rows,
     score_events,
     session_exposure_offsets,
     torus_grid,
@@ -339,6 +340,84 @@ class TestDecodeGain:
         _counts, _positions, sessions = _tuned_unit()
         permutation = within_session_permutation(sessions, np.random.default_rng(0))
         assert np.array_equal(sessions[permutation], sessions)
+
+
+class TestBlocksShareTheirRecording:
+    """Blocks of one recording share its exposure offset and its level when one of them is scored."""
+
+    def test_same_recording_rows_are_the_training_rows_of_the_scored_recording(self):
+        """
+        Description
+        -----------
+        A held-out block's level rows are the training rows of its recording; a held-out session's, whose
+        recording has no training rows, are empty.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        recording = np.array([0, 0, 0, 0, 1, 1])
+        np.testing.assert_array_equal(same_recording_rows(recording, np.array([2, 3, 4]), np.array([0, 1])), [2, 3])
+        assert same_recording_rows(recording, np.array([0, 1]), np.array([4, 5])).size == 0
+
+    def test_a_held_out_block_is_decoded_at_its_recordings_level(self):
+        """
+        Description
+        -----------
+        With three blocks of one recording, every fold's level rows are its training rows. The held-out
+        block's gains then move when the training blocks' counts are doubled (its level is theirs), and
+        differ from the gains scored at a level read from the block itself.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        counts, positions, blocks = _tuned_unit(n_sessions=3, per_session=150, seed=4)
+        recording = np.zeros(blocks.size, dtype=np.int64)
+        folds = decoding_context(positions, blocks, SETTINGS, PERIOD, None, 0, recording)
+        for fold in folds:
+            np.testing.assert_array_equal(fold["level_rows"], fold["train_rows"])
+            np.testing.assert_array_equal(fold["train_recording_index"], np.zeros(fold["train_rows"].size))
+        fold = folds[0]
+        beta = poisson_tuning_fit(fold["event_basis"][fold["train_rows"]], counts[fold["train_rows"]], 1.0, 30)
+        at_training_level = score_events(beta, fold["test_rows"], counts, fold, fold["truth_cell"], 1.0,
+                                         level_rows=fold["train_rows"])
+        louder = counts.copy()
+        louder[fold["train_rows"]] = louder[fold["train_rows"]] * 2.0
+        moved = score_events(beta, fold["test_rows"], louder, fold, fold["truth_cell"], 1.0,
+                             level_rows=fold["train_rows"])
+        own_level = score_events(beta, fold["test_rows"], counts, fold, fold["truth_cell"], 1.0)
+        assert not np.allclose(at_training_level, moved, equal_nan=True)
+        assert not np.allclose(at_training_level, own_level, equal_nan=True)
+
+    def test_sessions_alone_decode_as_before(self):
+        """
+        Description
+        -----------
+        For a unit recorded in several sessions the recording index is the session index, and passing it
+        must leave the statistic exactly as without it.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        counts, positions, sessions = _tuned_unit(n_sessions=3, per_session=150, seed=5)
+        without = decode_gain(counts, decoding_context(positions, sessions, SETTINGS, PERIOD), SETTINGS)["gain"]
+        with_index = decode_gain(counts, decoding_context(positions, sessions, SETTINGS, PERIOD, None, 0, sessions),
+                                 SETTINGS)["gain"]
+        assert with_index == without
 
 
 class TestSessionExposureOffsets:

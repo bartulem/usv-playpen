@@ -21,6 +21,12 @@ training split that leaves a group without events or non-events) returns NaN as 
 a group whose events all fall in one cross-fitting piece is left out and named; with zero
 Newton steps the batched, binned and batched cross-fitted scorers return the closed-form score of the
 zero calibration; and both routers send every scheme, family and group count to the scorer they name.
+
+The known level (a block scored at its recording's level, read from the recording's training blocks):
+the level-matched intercept puts the mean predicted probability exactly at the known rate; the scalar
+and batched known-level scores agree exactly at ``n_bins = 0``; a planted predictor still scores
+positive at a known level; and a known level is refused for the Poisson family, for more than one
+group, and under the in-sample scheme, which re-estimates every level by construction.
 """
 
 from __future__ import annotations
@@ -43,6 +49,7 @@ from usv_playpen.neural_modeling.deviance_metrics import (
     frozen_model_score,
     groups_left_out,
     intercept_only_deviance,
+    level_matched_intercept,
     newton_logistic,
     newton_poisson,
     pooled_calibrated_explained_deviance,
@@ -941,3 +948,108 @@ class TestSchemeRouting:
             frozen_model_null_scores(eta, labels, 30, 0, in_sample),
             batched_calibrated_explained_deviance(eta, labels, 30),
         )
+
+
+class TestKnownLevel:
+    """A block of a session is scored at its recording's known level; only the scale is cross-fitted."""
+
+    def test_the_level_matched_intercept_hits_the_known_rate(self):
+        """
+        Description
+        -----------
+        For several scales and rates, the intercept returned by ``level_matched_intercept`` must put
+        the mean predicted probability over the scored rows at the known rate.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        z = np.random.default_rng(11).normal(size=3000)
+        slopes = np.array([0.0, 0.5, 1.5])
+        rates = np.array([0.01, 0.07, 0.3])
+        intercept = level_matched_intercept(z, np.ones(z.size), slopes, rates, 60)
+        mean = (1.0 / (1.0 + np.exp(-(z[:, None] * slopes[None, :] + intercept[None, :])))).mean(axis=0)
+        np.testing.assert_allclose(mean, rates, rtol=1e-8)
+
+    def test_the_batched_known_level_score_matches_the_scalar_rule(self):
+        """
+        Description
+        -----------
+        On the exact path (``n_bins = 0``) the batched cross-fitted score with a known level per draw
+        must equal the scalar score with the same known level, draw by draw.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        eta, labels = _draw(n_frames=1500, n_draws=6, seed=12)
+        known = labels.mean(axis=0) * np.linspace(0.8, 1.2, labels.shape[1])
+        batched = batched_crossfitted_explained_deviance(eta, labels, 5, 40, 0, known)
+        scalar = [crossfitted_explained_deviance(eta, labels[:, d], np.zeros(eta.size, dtype=np.int64), 5,
+                                                 "bernoulli", 40, known_rate=float(known[d]))[0]
+                  for d in range(labels.shape[1])]
+        np.testing.assert_allclose(batched, scalar, rtol=1e-9, atol=1e-12)
+
+    def test_a_planted_predictor_scores_positive_at_a_known_level(self):
+        """
+        Description
+        -----------
+        A predictor that drives the labels must score clearly above zero with a positive scale when
+        the level is fixed at the true rate, and an unrelated predictor must not.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        rng = np.random.default_rng(13)
+        eta = rng.normal(size=8000)
+        labels = (rng.random(eta.size) < 1.0 / (1.0 + np.exp(-(-3.0 + eta)))).astype(np.float64)
+        groups = np.zeros(eta.size, dtype=np.int64)
+        planted, slope = frozen_model_score(eta, labels, groups, 40, "bernoulli", 1.0, CROSSFIT,
+                                            float(labels.mean()))
+        unrelated, _ = frozen_model_score(rng.normal(size=eta.size), labels, groups, 40, "bernoulli", 1.0,
+                                          CROSSFIT, float(labels.mean()))
+        assert planted > 0.02
+        assert slope > 0
+        assert abs(unrelated) < 0.01
+
+    def test_a_known_level_is_refused_where_it_is_undefined(self):
+        """
+        Description
+        -----------
+        A known level applies to one Bernoulli group under the cross-fitted scheme only: the Poisson
+        family, two groups and the in-sample scheme must each raise ``ValueError``.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        eta, labels = _draw(n_frames=1000, n_draws=1, seed=14)
+        y = labels[:, 0]
+        one = np.zeros(eta.size, dtype=np.int64)
+        two = (np.arange(eta.size) >= eta.size // 2).astype(np.int64)
+        with pytest.raises(ValueError, match="single group"):
+            crossfitted_explained_deviance(eta, y, one, 5, "poisson", 30, known_rate=0.05)
+        with pytest.raises(ValueError, match="single group"):
+            crossfitted_explained_deviance(eta, y, two, 5, "bernoulli", 30, known_rate=0.05)
+        with pytest.raises(ValueError, match="cross-fitted calibration"):
+            frozen_model_score(eta, y, one, 30, "bernoulli", 1.0, {"scheme": "in_sample", "n_blocks": 5}, 0.05)
+        with pytest.raises(ValueError, match="cross-fitted calibration"):
+            frozen_model_null_scores(eta, labels, 30, 0, {"scheme": "in_sample", "n_blocks": 5}, np.array([0.05]))
+

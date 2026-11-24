@@ -171,12 +171,14 @@ def occurrence_context(labels: np.ndarray, session_index: np.ndarray, event_time
     return folds
 
 
-def session_quiet_levels(counts: np.ndarray, labels: np.ndarray, session_index: np.ndarray,
+def session_quiet_levels(counts: np.ndarray, labels: np.ndarray, recording_index: np.ndarray,
                          rows: np.ndarray, mean_count_floor: float) -> np.ndarray:
     """
     Description
     -----------
-    Each window's session quiet level: the mean count over that session's quiet tiles among ``rows``.
+    Each window's session quiet level: the mean count over that recording session's quiet tiles among
+    ``rows``. The grouping is by recording session, so the blocks of a unit recorded in one session share
+    one level.
 
     This is the occurrence decoder's exposure. Expressing each class's rate relative to the session's
     quiet level lets one pair of class rates serve sessions that fire at different speeds, in the same
@@ -190,8 +192,9 @@ def session_quiet_levels(counts: np.ndarray, labels: np.ndarray, session_index: 
         Spike count per window.
     labels (np.ndarray)
         1 for a peri-onset window, 0 for a quiet tile.
-    session_index (np.ndarray)
-        Session id per window.
+    recording_index (np.ndarray)
+        Recording session per window (``occurrence_windows["recording_index"]``): every level is a
+        recording's, so the blocks of a unit recorded in one session share it.
     rows (np.ndarray)
         The windows to compute levels for (a fold's training rows).
     mean_count_floor (float)
@@ -205,8 +208,8 @@ def session_quiet_levels(counts: np.ndarray, labels: np.ndarray, session_index: 
 
     rows = np.asarray(rows)
     levels = np.empty(rows.size, dtype=np.float64)
-    for session in np.unique(session_index[rows]):
-        in_session = session_index[rows] == session
+    for session in np.unique(recording_index[rows]):
+        in_session = recording_index[rows] == session
         session_rows = rows[in_session]
         quiet = session_rows[labels[session_rows] < 0.5]
         reference = quiet if quiet.size else session_rows
@@ -374,7 +377,7 @@ def class_balanced_mean(values: np.ndarray, labels: np.ndarray) -> float:
     return 0.5 * float(np.mean(values[positive])) + 0.5 * float(np.mean(values[negative]))
 
 
-def score_split(counts: np.ndarray, labels: np.ndarray, session_index: np.ndarray, event_times: np.ndarray,
+def score_split(counts: np.ndarray, labels: np.ndarray, recording_index: np.ndarray, event_times: np.ndarray,
                 train_rows: np.ndarray, test_rows: np.ndarray, alpha: float, ridge_fraction: float,
                 mean_count_floor: float, crossfit_blocks: int,
                 log_prior: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -389,8 +392,9 @@ def score_split(counts: np.ndarray, labels: np.ndarray, session_index: np.ndarra
         Spike count per window.
     labels (np.ndarray)
         1 for a peri-onset window, 0 for a quiet tile.
-    session_index (np.ndarray)
-        Session id per window.
+    recording_index (np.ndarray)
+        Recording session per window (``occurrence_windows["recording_index"]``): every level is a
+        recording's, so the blocks of a unit recorded in one session share it.
     event_times (np.ndarray)
         Left edge of each window in seconds.
     train_rows (np.ndarray)
@@ -404,7 +408,9 @@ def score_split(counts: np.ndarray, labels: np.ndarray, session_index: np.ndarra
     mean_count_floor (float)
         Lower bound on a quiet level.
     crossfit_blocks (int)
-        Cross-fitting blocks for the scored windows' quiet level.
+        Cross-fitting blocks for the scored windows' quiet level, when it is estimated on them (a
+        held-out session); a held-out block of a recording with training windows takes the level of that
+        recording's training windows instead.
     log_prior (np.ndarray | None)
         ``(n_windows, 2)`` log prior per window of the whole set, quiet first; None is the equal prior.
 
@@ -418,11 +424,19 @@ def score_split(counts: np.ndarray, labels: np.ndarray, session_index: np.ndarra
         The fitted ``(2,)`` class rates, quiet first.
     """
 
-    train_levels = session_quiet_levels(counts, labels, session_index, train_rows, mean_count_floor)
+    train_levels = session_quiet_levels(counts, labels, recording_index, train_rows, mean_count_floor)
     ridge = ridge_fraction * float(counts[train_rows].sum())
     rates = occurrence_rates(counts[train_rows], labels[train_rows], train_levels, ridge)
-    test_levels = held_out_quiet_levels(counts, labels, event_times, test_rows, crossfit_blocks,
-                                        mean_count_floor)
+    # A held-out block of a recording that also has training windows takes that recording's level, set on
+    # the training windows; a held-out session's level is cross-fitted on its own quiet tiles.
+    test_recording = np.unique(recording_index[test_rows])
+    same = (np.flatnonzero(recording_index[train_rows] == test_recording[0]) if test_recording.size == 1
+            else np.empty(0, dtype=np.int64))
+    if same.size:
+        test_levels = np.full(np.asarray(test_rows).size, float(train_levels[same[0]]))
+    else:
+        test_levels = held_out_quiet_levels(counts, labels, event_times, test_rows, crossfit_blocks,
+                                            mean_count_floor)
     prior_rows = None if log_prior is None else np.asarray(log_prior, dtype=np.float64)[test_rows]
     log_posterior = occurrence_log_posterior(counts[test_rows], rates, test_levels, alpha, prior_rows)
     truth = (labels[test_rows] > 0.5).astype(np.int64)
@@ -431,7 +445,7 @@ def score_split(counts: np.ndarray, labels: np.ndarray, session_index: np.ndarra
     return gain, np.exp(log_posterior[:, 1]), rates
 
 
-def tuned_occurrence_amplitude(counts: np.ndarray, labels: np.ndarray, session_index: np.ndarray,
+def tuned_occurrence_amplitude(counts: np.ndarray, labels: np.ndarray, recording_index: np.ndarray,
                                event_times: np.ndarray, fold: dict, axis: dict, crossfit_blocks: int,
                                log_prior: np.ndarray | None = None) -> float:
     """
@@ -450,8 +464,9 @@ def tuned_occurrence_amplitude(counts: np.ndarray, labels: np.ndarray, session_i
         Spike count per window.
     labels (np.ndarray)
         1 for a peri-onset window, 0 for a quiet tile.
-    session_index (np.ndarray)
-        Session id per window.
+    recording_index (np.ndarray)
+        Recording session per window (``occurrence_windows["recording_index"]``): every level is a
+        recording's, so the blocks of a unit recorded in one session share it.
     event_times (np.ndarray)
         Left edge of each window in seconds.
     fold (dict)
@@ -476,7 +491,7 @@ def tuned_occurrence_amplitude(counts: np.ndarray, labels: np.ndarray, session_i
     for alpha in (float(a) for a in calibration["alpha_grid"]):
         scores = []
         for inner_train, inner_test in fold["inner_splits"]:
-            gain, _probability, _rates = score_split(counts, labels, session_index, event_times, inner_train,
+            gain, _probability, _rates = score_split(counts, labels, recording_index, event_times, inner_train,
                                                      inner_test, alpha, axis["ridge_frac"],
                                                      axis["mean_count_floor"], crossfit_blocks, log_prior)
             score = class_balanced_mean(gain, labels[inner_test])
@@ -487,7 +502,7 @@ def tuned_occurrence_amplitude(counts: np.ndarray, labels: np.ndarray, session_i
     return best_alpha
 
 
-def vocal_occurrence_statistic(counts: np.ndarray, labels: np.ndarray, session_index: np.ndarray,
+def vocal_occurrence_statistic(counts: np.ndarray, labels: np.ndarray, recording_index: np.ndarray,
                                event_times: np.ndarray, folds: list, axis: dict, crossfit_blocks: int,
                                log_prior_by_fold: list | None = None) -> dict:
     """
@@ -497,7 +512,8 @@ def vocal_occurrence_statistic(counts: np.ndarray, labels: np.ndarray, session_i
 
     Each fold fits the two class rates on its training sessions, tunes the amplitude on them, and scores
     the held-out session's windows against a fixed equal prior, with that session's quiet level
-    cross-fitted. The per-window gains of all folds are pooled and averaged within each class, then
+    cross-fitted. A held-out block of a unit recorded in one session is scored at its recording's level,
+    set on the recording's training blocks, so one session has one level whichever block is scored. The per-window gains of all folds are pooled and averaged within each class, then
     across the two, so the statistic is bounded above by ``log 2`` and does not depend on how many quiet
     tiles were drawn. It is sign-free: a unit suppressed around onsets decodes as well as one excited.
 
@@ -507,8 +523,9 @@ def vocal_occurrence_statistic(counts: np.ndarray, labels: np.ndarray, session_i
         Spike count per window, peri-onset windows and quiet tiles together.
     labels (np.ndarray)
         1 for a peri-onset window, 0 for a quiet tile.
-    session_index (np.ndarray)
-        Session id per window.
+    recording_index (np.ndarray)
+        Recording session per window (``occurrence_windows["recording_index"]``): every level is a
+        recording's, so the blocks of a unit recorded in one session share it.
     event_times (np.ndarray)
         Left edge of each window in seconds.
     folds (list)
@@ -534,13 +551,13 @@ def vocal_occurrence_statistic(counts: np.ndarray, labels: np.ndarray, session_i
     per_fold, log_ratios = [], []
     for fold_index, fold in enumerate(folds):
         log_prior = None if log_prior_by_fold is None else log_prior_by_fold[fold_index]
-        alpha = tuned_occurrence_amplitude(counts, labels, session_index, event_times, fold, axis,
+        alpha = tuned_occurrence_amplitude(counts, labels, recording_index, event_times, fold, axis,
                                            crossfit_blocks, log_prior)
         test_rows = fold["test_rows"]
-        gain, fold_probability, rates = score_split(counts, labels, session_index, event_times, fold["train_rows"],
+        gain, fold_probability, rates = score_split(counts, labels, recording_index, event_times, fold["train_rows"],
                                                     test_rows, alpha, axis["ridge_frac"],
                                                     axis["mean_count_floor"], crossfit_blocks, log_prior)
-        raw, _probability, _rates = score_split(counts, labels, session_index, event_times, fold["train_rows"],
+        raw, _probability, _rates = score_split(counts, labels, recording_index, event_times, fold["train_rows"],
                                                 test_rows, 1.0, axis["ridge_frac"], axis["mean_count_floor"],
                                                 crossfit_blocks, log_prior)
         per_window[test_rows], uncalibrated[test_rows], probability[test_rows] = gain, raw, fold_probability
@@ -636,13 +653,15 @@ def vocal_occurrence_jitter_null(occurrence_windows: dict, spike_seconds: dict, 
     Both classes are recounted from the surrogate. The amplitude search and the cross-fitted quiet levels
     are redone in every draw. Each draw has its own generator, seeded ``seed + start + draw``, which draws
     the block offsets session by session in the order of ``spike_seconds``, so draws
-    ``[start, start + n_draws)`` are the same however the range is partitioned across workers.
+    ``[start, start + n_draws)`` are the same however the range is partitioned across workers. The blocks
+    of a unit recorded in one session share one spike train, so they share one surrogate of it: the
+    surrogate is drawn once per recording session and recounted in every block.
 
     Parameters
     ----------
     occurrence_windows (dict)
         The ``occurrence_windows`` block of ``assemble_unit_vocal_events``: ``counts``, ``labels``,
-        ``session_index``, ``edges`` (each window's left edge, seconds) and ``width``.
+        ``session_index``, ``recording_index``, ``edges`` (each window's left edge, seconds) and ``width``.
     spike_seconds (dict)
         ``{session slot: sorted spike times in seconds}``, slots as in ``occurrence_windows["session_index"]``.
     durations (dict)
@@ -682,13 +701,18 @@ def vocal_occurrence_jitter_null(occurrence_windows: dict, spike_seconds: dict, 
     for draw in range(int(n_draws)):
         generator = np.random.default_rng(seed + start + draw)
         counts = np.empty_like(occurrence_windows["counts"])
+        surrogates = {}
         for slot, train in spike_seconds.items():
-            jittered = block_jitter_spike_times(train, durations[slot], block_seconds, generator)
             mask = occurrence_windows["session_index"] == slot
-            counts[mask] = counts_in_windows(jittered, occurrence_windows["edges"][mask],
+            # One surrogate per recording; a slot without windows still draws its own, as it always has.
+            recording = (int(occurrence_windows["recording_index"][mask][0]) if mask.any()
+                         else ("slot", slot))
+            if recording not in surrogates:
+                surrogates[recording] = block_jitter_spike_times(train, durations[slot], block_seconds, generator)
+            counts[mask] = counts_in_windows(surrogates[recording], occurrence_windows["edges"][mask],
                                              occurrence_windows["width"])
         values[draw] = vocal_occurrence_statistic(counts, occurrence_windows["labels"],
-                                                  occurrence_windows["session_index"], occurrence_windows["edges"],
+                                                  occurrence_windows["recording_index"], occurrence_windows["edges"],
                                                   folds, axis, crossfit_blocks, log_prior_by_fold)["gain"]
     return values
 
@@ -781,7 +805,7 @@ def onset_behaviour_tilts(folds: list, labels: np.ndarray, log_odds: np.ndarray,
     return kappas, priors
 
 
-def nested_onset_statistic(counts: np.ndarray, labels: np.ndarray, session_index: np.ndarray,
+def nested_onset_statistic(counts: np.ndarray, labels: np.ndarray, recording_index: np.ndarray,
                            event_times: np.ndarray, folds: list, axis: dict, crossfit_blocks: int,
                            log_priors: list, kappas: list) -> dict:
     """
@@ -804,8 +828,9 @@ def nested_onset_statistic(counts: np.ndarray, labels: np.ndarray, session_index
         Spike count per window.
     labels (np.ndarray)
         1 for a peri-onset window, 0 for a quiet tile.
-    session_index (np.ndarray)
-        Session id per window.
+    recording_index (np.ndarray)
+        Recording session per window (``occurrence_windows["recording_index"]``): every level is a
+        recording's, so the blocks of a unit recorded in one session share it.
     event_times (np.ndarray)
         Left edge of each window in seconds.
     folds (list)
@@ -827,7 +852,7 @@ def nested_onset_statistic(counts: np.ndarray, labels: np.ndarray, session_index
         plus ``behaviour_over_no_behaviour``, ``full_over_no_behaviour`` and ``kappas``.
     """
 
-    full = vocal_occurrence_statistic(counts, labels, session_index, event_times, folds, axis, crossfit_blocks,
+    full = vocal_occurrence_statistic(counts, labels, recording_index, event_times, folds, axis, crossfit_blocks,
                                       log_priors)
     truth = (np.asarray(labels, dtype=np.float64) > 0.5).astype(np.int64)
     behaviour_over = np.full(truth.size, np.nan, dtype=np.float64)

@@ -56,6 +56,7 @@ from usv_playpen.neural_modeling.neural_design_assembly import (
     load_session_usvs,
     load_unit_spike_frames,
     quiet_anchor_frames,
+    recording_groups,
     session_block_ids,
     session_timebase,
     session_window,
@@ -1770,6 +1771,17 @@ class TestBlocks:
         assert source_session(f"{self.SESSION}#block2") == self.SESSION
         assert source_session(self.SESSION) == self.SESSION
 
+    def test_blocks_of_one_session_form_one_recording(self):
+        """The blocks of a session map to one recording, distinct sessions to their own, in order of first
+        appearance; for sessions alone the grouping is the identity."""
+        blocks = session_block_ids(self.SESSION, 3)
+        recordings, index = recording_groups([*blocks, "20250102_000000"])
+        assert list(recordings) == [self.SESSION, "20250102_000000"]
+        assert recordings[self.SESSION] == blocks[0]
+        np.testing.assert_array_equal(index, [0, 0, 0, 1])
+        _recordings, identity = recording_groups(["a", "b", "c"])
+        np.testing.assert_array_equal(identity, [0, 1, 2])
+
     def test_a_block_identifier_on_a_unit_without_a_block_split_raises(self):
         """A block identifier reaching a unit tested across sessions is a bookkeeping error, not a window."""
         with pytest.raises(ValueError, match="no block split"):
@@ -1833,8 +1845,12 @@ class TestBlocks:
         assert events["session_ids"] == session_block_ids(self.SESSION, 5)
         np.testing.assert_array_equal(events["vocalization_start"], [10.0, 250.0, 990.0])
         np.testing.assert_array_equal(events["session_index"], [0, 1, 4])
+        # The blocks are the folds; the recording they share owns every level.
+        np.testing.assert_array_equal(events["recording_index"], [0, 0, 0])
         np.testing.assert_array_equal(events["counts"], [1, 2, 1])
         windows = events["occurrence_windows"]
+        assert set(np.asarray(windows["recording_index"]).tolist()) == {0}
+        assert windows["recording_index"].size == windows["session_index"].size
         tiles = windows["labels"] == 0
         for slot, block_id in enumerate(events["session_ids"]):
             low, high = events["per_session"][block_id]["window_seconds"]

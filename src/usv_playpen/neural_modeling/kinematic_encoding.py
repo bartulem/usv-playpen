@@ -5,7 +5,12 @@ Fitting kinematic encoding models on quiet frames, and choosing which features e
 The procedure is nested: a unit's sessions split into a pool and a held-out test session, and screening and
 forward selection see only the pool, through an inner leave-one-pool-session-out split. The model is a
 Bernoulli GLM on lagged features, fitted on subsampled quiet anchors with the case-control log-prior
-offset and per-session baselines, with each filter parametrised on a spline lag basis.
+offset and one baseline per recording session, with each filter parametrised on a spline lag basis.
+
+A unit recorded in one session, and the inner split of a pool of one session, work on contiguous blocks
+of that session in place of sessions. The blocks define what is held out and nothing else: they share
+the session's baseline in every fit, its level when one of them is scored (:func:`same_session_frames`),
+and its circular shift in every null.
 
 The module provides:
 - the fit (:func:`fit_quiet_model`, :func:`lag_basis`, :class:`FrameFilterModel`) and its frozen linear
@@ -14,7 +19,8 @@ The module provides:
   :func:`frozen_null_scores`);
 - greedy forward selection, each step decided by the per-step shift test (:func:`forward_select`,
   :func:`step_shift_test`, :func:`in_sample_pool_score`);
-- the inner splits (:func:`inner_folds`, and :func:`quiet_block_sessions` for a single-session pool);
+- the inner splits (:func:`inner_folds`, and :func:`quiet_block_sessions` for a single-session pool), and
+  the session's own training frames that fix a scored block's level (:func:`same_session_frames`);
 - the stored descriptors: the block-resampled filter band, filter shape summaries and the spike-triggered
   average.
 """
@@ -41,6 +47,7 @@ from .deviance_metrics import (
 )
 from .neural_design_assembly import (
     lagged_design,
+    source_session,
     spike_labels_at_frames,
     subsample_quiet_anchors,
 )
@@ -232,6 +239,70 @@ def quiet_block_sessions(session: dict, session_id: str, n_blocks: int, gap_fram
     return blocks
 
 
+def same_session_frames(per_session: dict, train_session_ids: list, scored_id: str) -> np.ndarray | None:
+    """
+    Description
+    -----------
+    The quiet anchors of the scored session's own recording among the training sessions, or None when
+    there are none.
+
+    A held-out session's level is unknown to a model fitted on other sessions, so its score estimates the
+    level on the scored frames. A held-out block is different: the model was fitted on other blocks of
+    the same recording, so the session's level is already known from them. These are the frames it is
+    read from: the training blocks of the scored block's recording. Their spike rate is the level the
+    block is scored at (:func:`deviance_metrics.frozen_model_score`, ``known_rate``), and a circular-shift
+    null recomputes it from the same frames under each shift (:func:`frozen_null_scores`).
+
+    Parameters
+    ----------
+    per_session (dict)
+        Assembled session data (sessions or quiet-block pseudo-sessions).
+    train_session_ids (list)
+        The sessions the scoring model was fitted on.
+    scored_id (str)
+        The session or block being scored.
+
+    Returns
+    -------
+    frames (np.ndarray | None)
+        Sorted quiet anchors of the training blocks of the scored recording, or None when the scored
+        session's recording has no training rows (every held-out session of a unit recorded in several).
+    """
+
+    recording = source_session(scored_id)
+    parts = [np.asarray(per_session[session_id]["quiet"]) for session_id in train_session_ids
+             if session_id != scored_id and source_session(session_id) == recording]
+    if not parts:
+        return None
+    return np.sort(np.concatenate(parts))
+
+
+def known_level_rate(session: dict, reference_frames: np.ndarray | None) -> float | None:
+    """
+    Description
+    -----------
+    The scored session's spike probability per quiet frame, read from its training frames
+    (:func:`same_session_frames`); None when there are none.
+
+    Parameters
+    ----------
+    session (dict)
+        The scored session's assembled data; ``spike_frames`` and ``n_frames`` are read. Blocks of one
+        recording share its spike train, so the training blocks' labels come from the same train.
+    reference_frames (np.ndarray | None)
+        The training frames of the same recording.
+
+    Returns
+    -------
+    rate (float | None)
+        Fraction of the reference frames holding a spike, or None.
+    """
+
+    if reference_frames is None or reference_frames.size == 0:
+        return None
+    return float(np.mean(spike_labels_at_frames(session["spike_frames"], reference_frames, session["n_frames"])))
+
+
 def fit_quiet_model(per_session: dict, train_session_ids: list, feature_indices: list, n_lags: int,
                     rng, encoding_settings: dict, message_output=print) -> tuple:
     """
@@ -244,8 +315,10 @@ def fit_quiet_model(per_session: dict, train_session_ids: list, feature_indices:
     class is subsampled with the log-prior offset correction and the fit is unweighted. The global
     ``max_train_total`` cap is divided across training sessions, since the design holds all of them at once.
 
-    Each training session carries its own unpenalised baseline (``session_intercepts``), so the filters
-    describe within-session modulation only.
+    Each recording session among the training sessions carries its own unpenalised baseline
+    (``session_intercepts``), so the filters describe within-session modulation only. Blocks of one
+    session (``<session>#block<i>``) share that session's baseline: a block is a unit of holding out,
+    not a recording.
 
     Parameters
     ----------
@@ -267,7 +340,7 @@ def fit_quiet_model(per_session: dict, train_session_ids: list, feature_indices:
     estimator (GroupElasticNetGLM | FrameFilterModel)
         The fitted model, always in frame space: the raw solver itself, or -- under
         ``temporal_basis.type == "bspline"`` -- the spline fit mapped back to one weight per frame. Its
-        intercept is the training sessions' anchor-weighted mean baseline.
+        intercept is the training recording sessions' anchor-weighted mean baseline.
     base_rate (float)
         Pooled training spike rate before subsampling, on the true-population scale.
     """
@@ -283,7 +356,9 @@ def fit_quiet_model(per_session: dict, train_session_ids: list, feature_indices:
     n_positive_total, n_negative_total = 0, 0
     composition = []
     per_session_cap = max(int(encoding_settings["max_train_total"] / max(len(train_session_ids), 1)), 1)
-    for position, session_id in enumerate(train_session_ids):
+    # One baseline per recording session, so the blocks of one session share it.
+    recordings = list(dict.fromkeys(source_session(session_id) for session_id in train_session_ids))
+    for session_id in train_session_ids:
         session = per_session[session_id]
         anchors, labels, offsets, n_positive, n_negative = subsample_quiet_anchors(
             session["quiet"], session["spike_frames"], session["n_frames"],
@@ -291,7 +366,7 @@ def fit_quiet_model(per_session: dict, train_session_ids: list, feature_indices:
         design_blocks.append(lagged_design(session["feature_time_series"][:, columns], anchors, n_lags))
         label_blocks.append(labels)
         offset_blocks.append(offsets)
-        owner_blocks.append(np.full(anchors.size, position))
+        owner_blocks.append(np.full(anchors.size, recordings.index(source_session(session_id))))
         n_positive_total += n_positive
         n_negative_total += n_negative
         composition.append({"session": str(session_id), "n_quiet_anchors": int(np.asarray(session["quiet"]).size),
@@ -328,14 +403,14 @@ def fit_quiet_model(per_session: dict, train_session_ids: list, feature_indices:
         solver.fit(x, labels_all, offset=offsets_all + session_offsets)
         return solver
 
-    # Per-session baselines. The solver has one intercept and penalises every column, so:
+    # Per-recording-session baselines. The solver has one intercept and penalises every column, so:
     #   spline basis -- the k - 1 session indicators (relative to the first session) enter as one extra
     #     column group scaled by `indicator_scale`, which weakens the ridge on them by indicator_scale**2.
     #     This is safe only because the basis path has no smoothness penalty across columns.
     #   raw per-frame lags -- the smoothness penalty would couple indicator columns, so the baselines are
     #     backfitted: Newton on each baseline given the filters, refit, repeat to a fixed point.
     settings_block = encoding_settings["session_intercepts"]
-    n_sessions = len(train_session_ids)
+    n_sessions = len(recordings)
     weights = np.bincount(owner, minlength=n_sessions).astype(np.float64)
     deltas = np.zeros(n_sessions)
     use_sessions = settings_block["compute"] and n_sessions > 1
@@ -374,8 +449,9 @@ def fit_quiet_model(per_session: dict, train_session_ids: list, feature_indices:
                     break
         filter_coefficients = (np.asarray(solver.coef_, dtype=np.float64).reshape(len(columns), -1)
                                if basis is not None else None)
-    # A new session's level is unknown to the model, so the returned intercept is the anchor-weighted mean
-    # baseline; every consumer recalibrates it on the scored frames.
+    # A held-out session's level is unknown to the model, so the returned intercept is the anchor-weighted
+    # mean baseline; a consumer scoring a held-out session recalibrates it on the scored frames, and one
+    # scoring a block of a training recording fixes it at that recording's rate (`same_session_frames`).
     intercept = float(solver.intercept_) + float(np.average(deltas, weights=weights))
     if basis is None:
         solver.intercept_ = intercept
@@ -395,10 +471,12 @@ def fit_quiet_model(per_session: dict, train_session_ids: list, feature_indices:
     base_rate = float(min(max(n_positive_total / denominator, 1e-6), 1.0 - 1e-6))
     # What the fit was trained on, carried on the estimator so a caller can persist it: per session the
     # quiet anchors, the spikes and silences among them before subsampling, and the rows kept after it;
-    # the per-session cap and whether any session hit it; the session baselines and the base rate.
+    # the per-session cap and whether any session hit it; the baseline of each recording session and the
+    # base rate.
     estimator.training_set_ = {"per_session": composition, "per_session_cap": int(per_session_cap),
                                "cap_reached": bool(any(entry["n_rows_kept"] >= per_session_cap
                                                        for entry in composition)),
+                               "baseline_sessions": recordings,
                                "session_baselines": [float(value) for value in deltas],
                                "base_rate": base_rate, "n_rows": int(labels_all.size)}
     return estimator, base_rate
@@ -446,12 +524,16 @@ def linear_predictor_at_frames(estimator, feature_time_series: np.ndarray, featu
 def frozen_null_scores(eta: np.ndarray, frames: np.ndarray, spike_frames: np.ndarray, n_frames: int,
                        fps: float, n_shuffles: int, rng, guard_seconds: float,
                        calibration_steps: int, calibration_bins: int, calibration: dict,
-                       null_block_megabytes: float) -> np.ndarray:
+                       null_block_megabytes: float, reference_frames: np.ndarray | None = None) -> np.ndarray:
     """
     Description
     -----------
     Null distribution of the calibrated score: circularly shift the scored session's spike train, relabel
     the same frames, and re-score the same frozen ``eta``. Nothing is refitted.
+
+    When the scored frames are a block whose level is known from the same recording's training frames
+    (``reference_frames``, see :func:`same_session_frames`), each draw reads that level from the training
+    frames under the same shift, exactly as the observed score reads it from the unshifted train.
 
     Parameters
     ----------
@@ -483,6 +565,9 @@ def frozen_null_scores(eta: np.ndarray, frames: np.ndarray, spike_frames: np.nda
         Memory budget for the label matrix of one block of draws (``kinematic_encoding.null_block_megabytes``).
         The Newton iteration holds several ``(n_frames, block)`` float64 arrays at once, so the working set
         is a few times this. It sets only how many draws run together; the scores do not depend on it.
+    reference_frames (np.ndarray | None)
+        Training frames of the scored block's recording, from which each draw's known level is read; None
+        when the scored session's level is estimated on the scored frames.
 
     Returns
     -------
@@ -501,11 +586,14 @@ def frozen_null_scores(eta: np.ndarray, frames: np.ndarray, spike_frames: np.nda
     for start in range(0, n_shuffles, block):
         stop = min(start + block, n_shuffles)
         labels = np.empty((frames.size, stop - start), dtype=np.float64)
+        known_rate = None if reference_frames is None else np.empty(stop - start, dtype=np.float64)
         for column, draw in enumerate(range(start, stop)):
             shifted = shifted_spike_frames(spike_frames, shifts[draw], fps, n_frames)
             labels[:, column] = spike_labels_at_frames(shifted, frames, n_frames)
+            if known_rate is not None:
+                known_rate[column] = float(np.mean(spike_labels_at_frames(shifted, reference_frames, n_frames)))
         null[start:stop] = frozen_model_null_scores(eta, labels, calibration_steps, calibration_bins,
-                                                    calibration)
+                                                    calibration, known_rate)
     return null
 
 
@@ -606,9 +694,11 @@ def screen_features(per_session: dict, pool_session_ids: list, n_lags: int, rng,
                                              session["quiet"], n_lags, encoding["chunk_rows"])
             labels = spike_labels_at_frames(session["spike_frames"], session["quiet"],
                                             session["n_frames"])
+            # A validation block is scored at its recording's level, read from the training blocks.
+            reference_frames = same_session_frames(per_session, train_ids, validation_id)
             score, slope = frozen_model_score(eta, labels, np.zeros(labels.size, dtype=np.int64),
                                               encoding["solver"]["calibration_steps"], "bernoulli", 1.0,
-                                              encoding["calibration"])
+                                              encoding["calibration"], known_level_rate(session, reference_frames))
             fold_scores.append(score)
             fold_slopes.append(slope)
             fold_nulls.append(frozen_null_scores(
@@ -616,7 +706,7 @@ def screen_features(per_session: dict, pool_session_ids: list, n_lags: int, rng,
                 settings["inference"]["screen_n_shuffles"], rng, settings["inference"]["shuffle_guard_seconds"],
                 encoding["solver"]["calibration_steps"],
                 encoding["solver"]["null_calibration_bins"], encoding["calibration"],
-                encoding["null_block_megabytes"]))
+                encoding["null_block_megabytes"], reference_frames))
         score = finite_mean(np.asarray(fold_scores))
         slope = finite_mean(np.asarray(fold_slopes))
         null = aggregate_fold_nulls(np.asarray(fold_scores), fold_nulls)
@@ -646,8 +736,9 @@ def in_sample_pool_score(per_session: dict, pool_session_ids: list, estimator, f
     anchors at once. This is the statistic of the per-step shift test (:func:`step_shift_test`).
 
     Every pool quiet anchor is scored, not only the subsampled ones the fit saw. The calibration refit
-    (:func:`deviance_metrics.frozen_model_score`) gives each pool session its own group, so a session's
-    baseline is recalibrated on its own anchors, as the per-session intercepts of the fit allow. The
+    (:func:`deviance_metrics.frozen_model_score`) gives each recording session in the pool its own group,
+    so a session's baseline is recalibrated on its own anchors, as the per-session baselines of the fit
+    allow; the blocks of one recording share one group, as they share one baseline in the fit. The
     empty model scores 0 by definition: its constant predictor explains no deviance, and a constant
     cannot be calibrated.
 
@@ -675,12 +766,16 @@ def in_sample_pool_score(per_session: dict, pool_session_ids: list, estimator, f
     if estimator is None:
         return 0.0
     etas, labels, groups = [], [], []
-    for group, session_id in enumerate(pool_session_ids):
+    recordings = list(dict.fromkeys(source_session(session_id) for session_id in pool_session_ids))
+    for session_id in pool_session_ids:
         session = per_session[session_id]
         etas.append(linear_predictor_at_frames(estimator, session["feature_time_series"], feature_indices,
                                                session["quiet"], n_lags, encoding_settings["chunk_rows"]))
         labels.append(spike_labels_at_frames(session["spike_frames"], session["quiet"], session["n_frames"]))
-        groups.append(np.full(session["quiet"].size, group, dtype=np.int64))
+        groups.append(np.full(session["quiet"].size, recordings.index(source_session(session_id)),
+                              dtype=np.int64))
+    # A recording's blocks arrive in time order (block ids are numbered in time), so its rows are in time
+    # order within its group, as the cross-fitted pieces assume.
     return float(frozen_model_score(np.concatenate(etas), np.concatenate(labels), np.concatenate(groups),
                                     encoding_settings["solver"]["calibration_steps"], "bernoulli", 1.0,
                                     encoding_settings["calibration"])[0])
@@ -700,8 +795,9 @@ def step_shift_test(per_session: dict, pool_session_ids: list, incumbent: list, 
 
     1. M and M + W are each fitted on ALL pool sessions. The observed gain is
        ``T_obs = S(M + W) - S(M)``, where ``S`` is :func:`in_sample_pool_score` (0 for an empty M).
-    2. Null draw ``b`` circularly shifts W's trace -- and only W's -- within every pool session, each by
-       its own lag drawn uniformly from ``[guard, T_s - guard]`` frames (``inference.shuffle_guard_seconds``).
+    2. Null draw ``b`` circularly shifts W's trace -- and only W's -- within every pool recording session,
+       each by its own lag drawn uniformly from ``[guard, T_s - guard]`` frames
+       (``inference.shuffle_guard_seconds``); the blocks of one recording share its trace and its lag.
        M + W_shifted is refitted on the pool and scored the same way: ``T_b = S(M + W_shifted) - S(M)``.
        Shifting W keeps its autocorrelation and its correlation structure within the trace, but breaks its
        alignment with the spikes and with M's features, so the null is what W adds by chance alone, given M.
@@ -753,7 +849,7 @@ def step_shift_test(per_session: dict, pool_session_ids: list, incumbent: list, 
         ``rule``, ``statistic``, ``winner``, ``incumbent_features``, ``m_candidates``, ``alpha``,
         ``n_refits`` (B), ``n_draws_run``, ``k_exceed``, ``p``, ``p_adjusted``, ``accepted``,
         ``early_stop``, ``t_obs``, ``t_null`` (``(n_draws_run,)`` in draw order), ``lags``
-        (``(n_draws_run, n_sessions)`` frames), ``session_order``, ``min_lag_frames``, ``seed``,
+        (``(n_draws_run, n_sessions)`` frames, each block carrying its recording's lag), ``session_order``, ``min_lag_frames``, ``seed``,
         ``score_incumbent``, ``score_winner``, ``refit_seconds`` (``(n_draws_run,)``),
         ``n_unconverged_fits`` and ``wall_seconds``.
     """
@@ -765,7 +861,10 @@ def step_shift_test(per_session: dict, pool_session_ids: list, incumbent: list, 
     fps = float(per_session[pool_session_ids[0]]["fps"])
     min_lag_frames = round(float(settings["inference"]["shuffle_guard_seconds"]) * fps)
     session_order = list(pool_session_ids)
-    session_lengths = {session_id: int(per_session[session_id]["n_frames"]) for session_id in session_order}
+    # One lag per recording session: the blocks of one recording share its trace, so they share its shift.
+    recording_lengths = {}
+    for session_id in session_order:
+        recording_lengths.setdefault(source_session(session_id), int(per_session[session_id]["n_frames"]))
     columns = [*incumbent, winner]
     unconverged = [0]
 
@@ -789,13 +888,17 @@ def step_shift_test(per_session: dict, pool_session_ids: list, incumbent: list, 
     t_null, lags, refit_seconds = [], [], []
     for draw in range(n_refits):
         draw_started = time.perf_counter()
-        draw_lags = draw_session_shift_lags(np.random.default_rng([seed, step_index, draw]), session_lengths,
-                                            min_lag_frames)
-        shifted = dict(per_session)
+        recording_lags = draw_session_shift_lags(np.random.default_rng([seed, step_index, draw]),
+                                                 recording_lengths, min_lag_frames)
+        draw_lags = {session_id: recording_lags[source_session(session_id)] for session_id in session_order}
+        shifted, shifted_series = dict(per_session), {}
         for session_id in session_order:
-            series = per_session[session_id]["feature_time_series"].copy()
-            series[:, winner] = circular_shift_trace(series[:, winner], draw_lags[session_id])
-            shifted[session_id] = {**per_session[session_id], "feature_time_series": series}
+            recording = source_session(session_id)
+            if recording not in shifted_series:
+                series = per_session[session_id]["feature_time_series"].copy()
+                series[:, winner] = circular_shift_trace(series[:, winner], recording_lags[recording])
+                shifted_series[recording] = series
+            shifted[session_id] = {**per_session[session_id], "feature_time_series": shifted_series[recording]}
         t_null.append(in_sample_pool_score(shifted, session_order, fit(shifted, columns), columns, n_lags,
                                            encoding) - score_incumbent)
         lags.append([draw_lags[session_id] for session_id in session_order])
@@ -911,9 +1014,11 @@ def forward_select(per_session: dict, pool_session_ids: list, survivors: list, n
                                              session["quiet"], n_lags, encoding["chunk_rows"])
             labels = spike_labels_at_frames(session["spike_frames"], session["quiet"],
                                             session["n_frames"])
+            # A validation block is scored at its recording's level, read from the training blocks.
+            known_rate = known_level_rate(session, same_session_frames(per_session, train_ids, validation_id))
             values.append(frozen_model_score(eta, labels, np.zeros(labels.size, dtype=np.int64),
                                              encoding["solver"]["calibration_steps"], "bernoulli", 1.0,
-                                             encoding["calibration"])[0])
+                                             encoding["calibration"], known_rate)[0])
         return np.asarray(values, dtype=np.float64), converged
 
     selected, path = [], []

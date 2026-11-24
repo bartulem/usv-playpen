@@ -23,7 +23,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.special import gammaln, logsumexp
 
-from .neural_vocal_decoding import inner_rotation_splits
+from .neural_vocal_decoding import inner_rotation_splits, same_recording_rows
 
 
 def decoding_spike_sufficiency(counts: np.ndarray, settings: dict) -> dict:
@@ -136,8 +136,8 @@ def category_posterior(counts: np.ndarray, rates: np.ndarray, prior: np.ndarray,
 
     ``alpha`` scales each category's log-rate deviation from the unit's mean log-rate, tempering the
     profile's depth without changing its level or ordering (0 collapses the posterior to the prior, 1
-    uses the training fit as is). ``exposure`` rescales to the held-out session's own mean count,
-    correcting its level.
+    uses the training fit as is). ``exposure`` rescales to the held-out session's mean count, correcting
+    its level: its own, or, for a held-out block, that of its recording's training blocks.
 
     Parameters
     ----------
@@ -230,14 +230,17 @@ def training_frequencies(labels: np.ndarray, rows: np.ndarray, n_categories: int
 
 
 def category_context(labels: np.ndarray, session_index: np.ndarray, event_times: np.ndarray | None = None,
-                     single_session_blocks: int = 0) -> list:
+                     single_session_blocks: int = 0, recording_index: np.ndarray | None = None) -> list:
     """
     Description
     -----------
     Precompute the leave-one-session-out folds, with everything that does not depend on spike counts.
 
     The priors (from the fold's training labels only) and the inner splits depend on the labels and
-    sessions alone, so they are shared by the observed fit and every permutation draw.
+    sessions alone, so they are shared by the observed fit and every permutation draw. Each fold also
+    carries, for its held-out rows and for every inner split, the training rows of the scored rows' own
+    recording session (:func:`neural_vocal_decoding.same_recording_rows`), whose mean count sets the
+    level of a held-out block, so one recording has one level.
 
     Parameters
     ----------
@@ -251,11 +254,15 @@ def category_context(labels: np.ndarray, session_index: np.ndarray, event_times:
         dispatcher always passes it; ``None`` leaves such a fold without inner splits.
     single_session_blocks (int)
         Blocks a single training session is cut into (``cohort.single_session_blocks``).
+    recording_index (np.ndarray | None)
+        Recording session per event; None treats every session as its own recording, which is exact for
+        a unit recorded in several sessions.
 
     Returns
     -------
     folds (list)
-        One dict per held-out session, carrying its row indices, prior and inner splits.
+        One dict per held-out session, carrying its row indices, prior, inner splits, ``level_rows`` and
+        ``inner_level_rows``.
     """
 
     sessions = np.unique(session_index)
@@ -264,6 +271,7 @@ def category_context(labels: np.ndarray, session_index: np.ndarray, event_times:
         raise ValueError(msg)
     n_categories = int(labels.max()) + 1
     rows_by_session = {int(s): np.flatnonzero(session_index == s) for s in sessions}
+    recording = np.asarray(session_index if recording_index is None else recording_index)
 
     folds = []
     for held_out in sessions:
@@ -273,10 +281,14 @@ def category_context(labels: np.ndarray, session_index: np.ndarray, event_times:
         prior = training_frequencies(labels, train_rows, n_categories)
         inner_splits = inner_rotation_splits(train_sessions, rows_by_session, event_times,
                                              single_session_blocks)
+        test_rows = rows_by_session[int(held_out)]
         folds.append({"held_out": int(held_out), "train_sessions": train_sessions,
-                      "train_rows": train_rows, "test_rows": rows_by_session[int(held_out)],
+                      "train_rows": train_rows, "test_rows": test_rows,
                       "prior": prior, "n_categories": n_categories,
-                      "inner_splits": inner_splits})
+                      "inner_splits": inner_splits,
+                      "level_rows": same_recording_rows(recording, train_rows, test_rows),
+                      "inner_level_rows": [same_recording_rows(recording, inner_train, inner_test)
+                                           for inner_train, inner_test in inner_splits]})
     return folds
 
 
@@ -322,7 +334,8 @@ def tuned_category_amplitude(counts: np.ndarray, labels: np.ndarray, fold: dict,
     best_alpha, best_score = 1.0, -np.inf
     for alpha in grid:
         scores = []
-        for train_rows, test_rows in fold["inner_splits"]:
+        for (train_rows, test_rows), level_rows in zip(fold["inner_splits"], fold["inner_level_rows"],
+                                                       strict=True):
             if (train_rows.size < surface["min_train_events"]
                     or test_rows.size < surface["min_test_events"]):
                 continue
@@ -330,7 +343,9 @@ def tuned_category_amplitude(counts: np.ndarray, labels: np.ndarray, fold: dict,
                                           None if tilt is None else tilt[test_rows])
             rates = category_rates(counts[train_rows], labels[train_rows], fold["n_categories"],
                                    ridge_frac * counts[train_rows].sum())
-            exposure = (max(float(counts[test_rows].mean()), mean_count_floor)
+            # The scored rows' level: their own mean count, or their recording's training rows' for a block.
+            level_source = level_rows if level_rows.size else test_rows
+            exposure = (max(float(counts[level_source].mean()), mean_count_floor)
                         / max(float(counts[train_rows].mean()), mean_count_floor))
             posterior = category_posterior(counts[test_rows], rates, prior, alpha, exposure,
                                            mean_count_floor)
@@ -444,7 +459,9 @@ def category_gain(counts: np.ndarray, labels: np.ndarray, folds: list, settings:
         ridge = ridge_frac * float(scored[train_rows].sum())
         alpha = tuned_category_amplitude(scored, labels, fold, settings, tilt)
         rates = category_rates(scored[train_rows], labels[train_rows], fold["n_categories"], ridge)
-        exposure = (max(float(scored[test_rows].mean()), mean_count_floor)
+        # The held-out level: the session's own mean count, or its recording's training rows' for a block.
+        level_source = fold["level_rows"] if fold["level_rows"].size else test_rows
+        exposure = (max(float(scored[level_source].mean()), mean_count_floor)
                     / max(float(scored[train_rows].mean()), mean_count_floor))
         truth = labels[test_rows]
         prior = tilted_category_prior(fold["prior"], None if tilt is None else tilt[test_rows])

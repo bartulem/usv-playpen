@@ -676,6 +676,40 @@ def source_session(session_id: str) -> str:
     return session_id.split(BLOCK_TAG, maxsplit=1)[0]
 
 
+def recording_groups(session_ids: list) -> tuple[dict, np.ndarray]:
+    """
+    Description
+    -----------
+    Group session or block identifiers by the recording session they belong to.
+
+    Every session-level quantity of the analyses (a baseline, a level, an exposure, a standardisation, a
+    circular shift) belongs to a recording session, so the blocks of a unit recorded in one session share
+    it, while the folds still hold out one block at a time. This is the one mapping from fold identifiers
+    to recording sessions that every analysis uses. For a unit recorded in several sessions each identifier
+    is its own recording, and the grouping is the identity.
+
+    Parameters
+    ----------
+    session_ids (list)
+        Session or block identifiers, in the order the caller indexes them.
+
+    Returns
+    -------
+    recordings (dict)
+        ``{recording session: first identifier of it in session_ids}``, in order of first appearance.
+    recording_index (np.ndarray)
+        ``(len(session_ids),)`` index into ``recordings`` of each identifier.
+    """
+
+    recordings: dict = {}
+    recording_index = []
+    for session_id in session_ids:
+        recording = source_session(session_id)
+        recordings.setdefault(recording, session_id)
+        recording_index.append(list(recordings).index(recording))
+    return recordings, np.asarray(recording_index, dtype=np.int64)
+
+
 def session_block_ids(session_id: str, n_blocks: int) -> list[str]:
     """
     Description
@@ -1016,7 +1050,10 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
     For a unit tested on blocks, each block is a session here: its events are the USVs whose onset lies
     in the block's window and its tiles those lying wholly inside it, so nothing within
     ``history_pre_seconds`` of a neighbouring block is kept. The circular shift still wraps over the
-    whole session, so ``duration_seconds`` is the session's.
+    whole session, so ``duration_seconds`` is the session's. ``session_index`` numbers the blocks, which
+    are what the folds hold out; ``recording_index`` numbers the recording sessions, which own every
+    session-level quantity (a level, an exposure, a standardisation, a surrogate spike train), so the
+    blocks of one recording share it (:func:`recording_groups`).
 
     Parameters
     ----------
@@ -1035,11 +1072,12 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
     Returns
     -------
     events (dict)
-        ``positions``, ``session_index``, ``counts``, ``region_labels`` (the acoustic region per
+        ``positions``, ``session_index``, ``recording_index``, ``counts``, ``region_labels`` (the acoustic region per
         event, NaN where the summary carries no such column), ``category_labels`` (the acoustic
         category the multinomial identity decoder targets, NaN where absent; both are read from
         ``vocalizations.category_column``), ``silent_gap``, ``vocalization_start``,
-        ``vocalization_stop`` at vocalization grain; ``occurrence_windows`` (``counts``, ``labels``, ``session_index``, plus the window ``edges`` and
+        ``vocalization_stop`` at vocalization grain; ``occurrence_windows`` (``counts``, ``labels``, ``session_index``,
+        ``recording_index``, plus the window ``edges`` and
         their ``width``, which the circular-shift null needs to recount both classes from a shifted
         train) over positives and tiles
         together; ``session_ids``; and ``per_session`` bookkeeping (durations, the window in seconds,
@@ -1067,6 +1105,8 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
     per_session: dict = {}
 
     # Vocal sessions only. Blocks load their source session from disk.
+    _recordings, recording_of_slot = recording_groups(list(unit["vocal_sessions"]))
+    recording_parts, tile_recording_parts = [], []
     for slot, session_id in enumerate(unit["vocal_sessions"]):
         source_id = source_session(session_id)
         track_names, frame_rate, n_frames = session_timebase(data_root, source_id)
@@ -1149,9 +1189,11 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
         starts_parts.append(focal_starts[keep])
         stops_parts.append(focal_stops[keep])
         index_parts.append(np.full(int(keep.sum()), slot, dtype=np.int64))
+        recording_parts.append(np.full(int(keep.sum()), recording_of_slot[slot], dtype=np.int64))
         tile_counts_parts.append(tile_counts)
         tile_edge_parts.append(tile_edges)
         tile_index_parts.append(np.full(tile_edges.size, slot, dtype=np.int64))
+        tile_recording_parts.append(np.full(tile_edges.size, recording_of_slot[slot], dtype=np.int64))
 
         per_session[session_id] = {
             "slot": slot, "duration_seconds": duration, "frame_rate": frame_rate,
@@ -1165,6 +1207,9 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
     positions = np.vstack(positions_parts) if positions_parts else np.empty((0, 2), dtype=np.float64)
     counts = np.concatenate(counts_parts) if counts_parts else np.empty(0, dtype=np.float64)
     session_index = np.concatenate(index_parts) if index_parts else np.empty(0, dtype=np.int64)
+    recording_index = np.concatenate(recording_parts) if recording_parts else np.empty(0, dtype=np.int64)
+    tile_recording = (np.concatenate(tile_recording_parts) if tile_recording_parts
+                      else np.empty(0, dtype=np.int64))
     tile_counts = np.concatenate(tile_counts_parts) if tile_counts_parts else np.empty(0, dtype=np.float64)
     tile_index = np.concatenate(tile_index_parts) if tile_index_parts else np.empty(0, dtype=np.int64)
     tile_edges = np.concatenate(tile_edge_parts) if tile_edge_parts else np.empty(0, dtype=np.float64)
@@ -1173,6 +1218,7 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
     return {
         "positions": positions,
         "session_index": session_index,
+        "recording_index": recording_index,
         "counts": counts,
         "region_labels": (np.concatenate(region_parts) if region_parts
                           else np.empty(0, dtype=np.float64)),
@@ -1187,6 +1233,7 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
             "counts": np.concatenate([counts, tile_counts]),
             "labels": np.concatenate([np.ones(counts.size), np.zeros(tile_counts.size)]),
             "session_index": np.concatenate([session_index, tile_index]),
+            "recording_index": np.concatenate([recording_index, tile_recording]),
             # The circular-shift null recounts both classes from the shifted train, so it needs the
             # window edges, aligned with `counts`.
             "edges": np.concatenate([window_edges, tile_edges]),

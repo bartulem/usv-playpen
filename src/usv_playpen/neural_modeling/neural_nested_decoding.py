@@ -346,7 +346,8 @@ def nested_design(events: dict, per_session: dict, feature_names: list, n_lags: 
 
     Rows are USVs. Each behavioural feature contributes ``n_lags`` columns, its history ending at the
     frame before onset, followed by a single neural column: the unit's spike count in the USV's
-    window, z-scored per session. The neuron enters as a count, as in the
+    window, z-scored per recording session (the blocks of a unit recorded in one session share one mean
+    and one spread, as they share one recording). The neuron enters as a count, as in the
     vocalization-identity decoder, rather than as a lagged spike history, which would mostly carry its
     responses to earlier USVs in the bout.
 
@@ -356,8 +357,8 @@ def nested_design(events: dict, per_session: dict, feature_names: list, n_lags: 
     Parameters
     ----------
     events (dict)
-        From ``assemble_unit_vocal_events``: ``vocalization_start``, ``session_index``, ``counts``,
-        ``positions``, ``region_labels``, ``session_ids``.
+        From ``assemble_unit_vocal_events``: ``vocalization_start``, ``session_index``,
+        ``recording_index``, ``counts``, ``positions``, ``region_labels``, ``session_ids``.
     per_session (dict)
         From ``assemble_unit_sessions``: per session ``feature_time_series``, ``feature_names``,
         ``fps`` and ``n_frames``.
@@ -366,22 +367,23 @@ def nested_design(events: dict, per_session: dict, feature_names: list, n_lags: 
     n_lags (int)
         History length in frames.
     sigma_floor (float)
-        Floor on the per-session count SD, so a session in which the unit is near-silent cannot divide
+        Floor on the per-recording count SD, so a session in which the unit is near-silent cannot divide
         a near-zero spread into an enormous z.
 
     Returns
     -------
     design (dict)
         ``behaviour`` ``(n_kept, n_features * n_lags)``, ``neural`` ``(n_kept, 1)``, ``positions``,
-        ``session_index``, ``region_labels``, ``kept`` (index into the vocal-decoding event set), and
-        ``per_session`` counts of events offered versus kept.
+        ``session_index``, ``recording_index``, ``region_labels``, ``kept`` (index into the
+        vocal-decoding event set), and ``per_session`` counts of events offered versus kept, with the
+        mean and spread the session's counts were standardised by.
     """
 
     if not feature_names:
         msg = "nested_design needs at least one behavioural feature."
         raise ValueError(msg)
 
-    behaviour_parts, neural_parts, keep_parts = [], [], []
+    behaviour_parts, keep_parts = [], []
     bookkeeping: dict = {}
     for slot, session_id in enumerate(events["session_ids"]):
         session = per_session[session_id]
@@ -401,25 +403,35 @@ def nested_design(events: dict, per_session: dict, feature_names: list, n_lags: 
         usable = (frames >= n_lags - 1) & (frames < session["n_frames"])
         kept_rows, kept_frames = rows[usable], frames[usable]
 
-        counts = np.asarray(events["counts"], dtype=np.float64)[kept_rows]
-        centre = float(counts.mean()) if counts.size else 0.0
-        spread = max(float(counts.std()), sigma_floor)
-
         behaviour_parts.append(lagged_design(series, kept_frames, n_lags)
                                if kept_frames.size else np.empty((0, len(columns) * n_lags)))
-        neural_parts.append(((counts - centre) / spread)[:, None])
         keep_parts.append(kept_rows)
         bookkeeping[session_id] = {"n_events_vocal_decoding": int(rows.size),
                                    "n_events_with_full_history": int(kept_rows.size),
-                                   "n_dropped_short_history": int(rows.size - kept_rows.size),
-                                   "count_mean": centre, "count_sd": spread}
+                                   "n_dropped_short_history": int(rows.size - kept_rows.size)}
 
     kept = (np.concatenate(keep_parts) if keep_parts else np.empty(0, dtype=np.int64))
+    # The count is standardised per recording session, over the kept events of all its blocks.
+    counts = np.asarray(events["counts"], dtype=np.float64)[kept]
+    recording = np.asarray(events["recording_index"])[kept]
+    slot_of = np.asarray(events["session_index"])[kept]
+    neural = np.empty(counts.size, dtype=np.float64)
+    for value in np.unique(recording):
+        rows = recording == value
+        centre = float(counts[rows].mean())
+        spread = max(float(counts[rows].std()), sigma_floor)
+        neural[rows] = (counts[rows] - centre) / spread
+        for slot in np.unique(slot_of[rows]):
+            bookkeeping[events["session_ids"][int(slot)]].update({"count_mean": centre, "count_sd": spread})
+    for entry in bookkeeping.values():
+        entry.setdefault("count_mean", 0.0)
+        entry.setdefault("count_sd", float(sigma_floor))
     stack = (lambda parts, width: np.vstack(parts) if parts else np.empty((0, width)))  # noqa: E731
     return {"behaviour": stack(behaviour_parts, len(feature_names) * n_lags),
-            "neural": stack(neural_parts, 1),
+            "neural": neural[:, None],
             "positions": np.asarray(events["positions"], dtype=np.float64)[kept],
             "session_index": np.asarray(events["session_index"])[kept],
+            "recording_index": recording,
             "region_labels": np.asarray(events["region_labels"], dtype=np.float64)[kept],
             "kept": kept,
             "feature_names": list(feature_names),
@@ -992,8 +1004,8 @@ def onset_nested_design(events: dict, per_session: dict, feature_names: list, n_
     -------
     design (dict)
         ``behaviour`` ``(n_kept, n_features * n_lags)``, ``kept`` (index into the occurrence windows),
-        ``counts``, ``labels``, ``session_index``, ``edges`` (the kept windows'), ``feature_names`` and
-        ``per_session`` counts of windows offered versus kept.
+        ``counts``, ``labels``, ``session_index``, ``recording_index``, ``edges`` (the kept windows'),
+        ``feature_names`` and ``per_session`` counts of windows offered versus kept.
 
     Raises
     ------
@@ -1035,5 +1047,6 @@ def onset_nested_design(events: dict, per_session: dict, feature_names: list, n_
     return {"behaviour": behaviour, "kept": kept,
             "counts": np.asarray(windows["counts"], dtype=np.float64)[kept],
             "labels": np.asarray(windows["labels"], dtype=np.float64)[kept],
-            "session_index": session_index[kept], "edges": edges[kept],
+            "session_index": session_index[kept],
+            "recording_index": np.asarray(windows["recording_index"])[kept], "edges": edges[kept],
             "feature_names": list(feature_names), "per_session": bookkeeping}

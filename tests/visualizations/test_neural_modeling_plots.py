@@ -264,7 +264,7 @@ def _category_unit(n_sessions: int = 3, per_session: int = 150, seed: int = 0) -
     section = category_gain(counts[kept], codes, folds, settings["vocal_decoding"], with_detail=True)
     section["categories"] = values.tolist()
     events = {"category_labels": labels, "counts": counts, "session_index": session_index,
-              "vocalization_start": starts, "positions": positions}
+              "recording_index": session_index, "vocalization_start": starts, "positions": positions}
     return events, section, settings
 
 
@@ -875,7 +875,8 @@ def _uneven_category_unit(sizes: list, seed: int = 0) -> tuple[dict, dict, dict]
     section = category_gain(counts[kept], codes, folds, settings["vocal_decoding"], with_detail=True)
     section["categories"] = values.tolist()
     events = {"category_labels": labels, "counts": counts, "session_index": session_index,
-              "vocalization_start": starts, "positions": rng.uniform(size=(n_events, 2))}
+              "recording_index": session_index, "vocalization_start": starts,
+              "positions": rng.uniform(size=(n_events, 2))}
     return events, section, settings
 
 

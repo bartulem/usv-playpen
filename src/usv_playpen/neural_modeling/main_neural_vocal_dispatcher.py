@@ -741,7 +741,8 @@ def vocal_gating_feature_job(feature_index: int) -> tuple:
                                         universe["features_quiet"][:, feature_index], universe["vocal"],
                                         universe["spikes"], universe["spikes_quiet"],
                                         universe["session_index"], universe["session_quiet"], settings,
-                                        universe["fit_rows"])
+                                        universe["fit_rows"], universe["recording_index"],
+                                        universe["recording_quiet"])
     null = gating_null(universe, feature_index, settings, state["guard_seconds"], state["n_draws"],
                        seed=state["seed"])
     return feature_index, observed, null
@@ -978,7 +979,8 @@ def run_vocal_occurrence(unit: dict, events: dict, settings: dict, data_root: st
     crossfit_blocks = int(settings["kinematic_encoding"]["calibration"]["n_blocks"])
     folds = occurrence_context(windows["labels"], windows["session_index"], windows["edges"],
                                int(settings["cohort"]["single_session_blocks"]))
-    occurrence = vocal_occurrence_statistic(windows["counts"], windows["labels"], windows["session_index"],
+    # Folds hold out a session (or block); every level belongs to a recording session.
+    occurrence = vocal_occurrence_statistic(windows["counts"], windows["labels"], windows["recording_index"],
                                             windows["edges"], folds, axis, crossfit_blocks)
     state = {"occurrence_windows": windows, "spike_seconds": session_spike_seconds(events, data_root, unit),
              "durations": session_durations(events), "seed": int(settings["inference"]["shuffle_seed"]),
@@ -1005,7 +1007,8 @@ def run_vocal_occurrence(unit: dict, events: dict, settings: dict, data_root: st
                        # The windows the per-window arrays align to, and the assembly's bookkeeping (per
                        # session: duration, window, USVs and tiles kept, USVs dropped by each filter).
                        "windows": {"counts": windows["counts"], "labels": windows["labels"],
-                                   "session_index": windows["session_index"], "edges": windows["edges"],
+                                   "session_index": windows["session_index"],
+                                   "recording_index": windows["recording_index"], "edges": windows["edges"],
                                    "width": windows["width"]},
                        "session_ids": list(events["session_ids"]),
                        "assembly": events["per_session"],
@@ -1075,7 +1078,7 @@ def run_vocalization_identity(unit: dict, events: dict, settings: dict, target: 
             return write_not_run(output_directory, unit, section, insufficient, settings, message_output)
         session_index = np.asarray(events["session_index"])[kept]
         folds = category_context(codes, session_index, np.asarray(events["vocalization_start"])[kept],
-                                 single_session_blocks)
+                                 single_session_blocks, np.asarray(events["recording_index"])[kept])
         identity = category_gain(counts, codes, folds, decoding, with_detail=True)
         identity.update({"categories": values.tolist(), "n_unlabelled": int((~kept).sum())})
         n_draws = decoding["discrimination_null"]["n_permutations_category_grain"]
@@ -1087,7 +1090,7 @@ def run_vocalization_identity(unit: dict, events: dict, settings: dict, target: 
         if insufficient is not None:
             return write_not_run(output_directory, unit, section, insufficient, settings, message_output)
         folds = decoding_context(events["positions"], session_index, decoding, period, events["vocalization_start"],
-                                 single_session_blocks)
+                                 single_session_blocks, events["recording_index"])
         identity = decode_gain(counts, folds, decoding, with_detail=True)
         n_draws = decoding["discrimination_null"]["n_permutations"]
         state = {"target": target, "counts": counts, "folds": folds, "decoding": decoding,
@@ -1104,7 +1107,7 @@ def run_vocalization_identity(unit: dict, events: dict, settings: dict, target: 
     else:
         identity.update(flagged_descriptors(counts, events["positions"], session_index, decoding, period,
                                             identity["gain"], null, events["vocalization_start"],
-                                            single_session_blocks))
+                                            single_session_blocks, events["recording_index"]))
     identity["target"] = target
     identity = vocalization_identity_payload(identity, null, p_value, at_floor, events)
     message_output(f"  VOCALIZATION IDENTITY ({target})  gain {identity['gain']:+.5f} | z {identity['z']:+.1f} "
@@ -1239,7 +1242,7 @@ def run_manifold_nested_decoding(unit: dict, events: dict, design: dict, setting
     folds = decoding_context(design["positions"], design["session_index"], decoding,
                              settings["vocalizations"]["torus_period"],
                              np.asarray(events["vocalization_start"])[design["kept"]],
-                             int(settings["cohort"]["single_session_blocks"]))
+                             int(settings["cohort"]["single_session_blocks"]), design["recording_index"])
     kappas, priors = behaviour_priors(folds, design["behaviour_control"]["predicted_positions"],
                                       design["positions"], nested)
     posterior = posterior_nested_gain(counts, folds, decoding, priors, kappas, with_detail=True)
@@ -1332,7 +1335,8 @@ def run_category_nested_decoding(unit: dict, events: dict, design: dict, setting
     session_index = np.asarray(design["session_index"])[labelled]
     times = np.asarray(events["vocalization_start"])[design["kept"]][labelled]
     folds = category_context(codes, session_index, times,
-                             int(settings["cohort"]["single_session_blocks"]))
+                             int(settings["cohort"]["single_session_blocks"]),
+                             np.asarray(design["recording_index"])[labelled])
     kappas, tilts = category_behaviour_tilts(folds, codes, log_evidence,
                                              nested["behaviour_prior"]["kappa_grid"])
     result = category_nested_gain(counts, codes, folds, decoding, tilts, kappas, with_detail=True)
@@ -1412,13 +1416,14 @@ def run_onset_nested_decoding(unit: dict, events: dict, design: dict, settings: 
     held_out_day = str(unit["rec_date"])
     log_odds = onset_control_log_odds(control, held_out_day, design["behaviour"], settings)
     windows = {"counts": design["counts"], "labels": design["labels"], "session_index": design["session_index"],
-               "edges": design["edges"], "width": events["occurrence_windows"]["width"]}
+               "recording_index": design["recording_index"], "edges": design["edges"],
+               "width": events["occurrence_windows"]["width"]}
     crossfit_blocks = int(settings["kinematic_encoding"]["calibration"]["n_blocks"])
     folds = occurrence_context(windows["labels"], windows["session_index"], windows["edges"],
                                int(settings["cohort"]["single_session_blocks"]))
     kappas, log_priors = onset_behaviour_tilts(folds, windows["labels"], log_odds,
                                                nested["behaviour_prior"]["kappa_grid"])
-    result = nested_onset_statistic(windows["counts"], windows["labels"], windows["session_index"],
+    result = nested_onset_statistic(windows["counts"], windows["labels"], windows["recording_index"],
                                     windows["edges"], folds, axis, crossfit_blocks, log_priors, kappas)
     message_output(f"  NESTED DECODING (onset)  added {result['added']:+.6f} nats/window over "
                    f"{windows['counts'].size} windows | behaviour over no behaviour "
@@ -1444,6 +1449,7 @@ def run_onset_nested_decoding(unit: dict, events: dict, design: dict, settings: 
                     "control_auroc_on_windows": area_under_roc(np.asarray(log_odds), windows["labels"]),
                     "kept": np.asarray(design["kept"]),
                     "windows": {"labels": windows["labels"], "session_index": windows["session_index"],
+                                "recording_index": windows["recording_index"],
                                 "edges": windows["edges"], "counts": windows["counts"]},
                     "design_per_session": design["per_session"]})
     message_output(f"    null z {payload['z']:+.1f} | p {p_value:.4e}{' (at floor)' if at_floor else ''} "

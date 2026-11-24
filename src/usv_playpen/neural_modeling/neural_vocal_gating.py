@@ -32,6 +32,7 @@ from .neural_design_assembly import (
     filter_vocalizations,
     frames_in_window,
     load_session_usvs,
+    recording_groups,
     session_timebase,
     source_session,
     spike_labels_at_frames,
@@ -117,15 +118,18 @@ def should_run_gating(vocal_occurrence_significant: bool, vocalization_identity_
 
 def loso_added_deviance(full: np.ndarray, base: np.ndarray, spikes: np.ndarray,
                         session_index: np.ndarray, ridge_fraction: float, irls_steps: int,
-                        calibration_steps: int, fit_rows: np.ndarray = None) -> dict:
+                        calibration_steps: int, fit_rows: np.ndarray = None,
+                        recording_index: np.ndarray | None = None) -> dict:
     """
     Description
     -----------
     Held-out added deviance of a FULL design over a nested BASE design, summed across sessions.
 
     Per fold the slopes of both models are fitted on the training sessions and frozen, and only the
-    intercept is recalibrated on the held-out session, so the statistic tests the relationship rather
-    than the level. Deviance is used rather than the coefficient, which can quasi-separate, and the
+    intercept is recalibrated, so the statistic tests the relationship rather than the level. The
+    intercept is the held-out session's level: recalibrated on the held-out session itself, or -- for a
+    held-out block of a unit recorded in one session -- on the fitted rows of the same recording's
+    training blocks, where that level is already known, so one session has one level. Deviance is used rather than the coefficient, which can quasi-separate, and the
     ridge scales with the training row count.
 
     ``fit_rows`` subsamples the rows the models are fitted on while every row is still scored, and the
@@ -151,6 +155,9 @@ def loso_added_deviance(full: np.ndarray, base: np.ndarray, spikes: np.ndarray,
     fit_rows (np.ndarray)
         Boolean mask of rows the models are fitted on; ``None`` fits on every row. Scoring and the ridge
         always use every row, so this changes only how much data the fit sees.
+    recording_index (np.ndarray | None)
+        Recording session per row; None treats every session as its own recording, which is exact for a
+        unit recorded in several sessions.
 
     Returns
     -------
@@ -166,11 +173,17 @@ def loso_added_deviance(full: np.ndarray, base: np.ndarray, spikes: np.ndarray,
         raise ValueError(msg)
 
     fitted = np.ones(spikes.size, dtype=bool) if fit_rows is None else np.asarray(fit_rows, dtype=bool)
+    recording = np.asarray(session_index if recording_index is None else recording_index)
     per_fold, total, baseline = [], 0.0, 0.0
     for held_out in sessions:
         test = np.flatnonzero(session_index == held_out)
         train = np.flatnonzero((session_index != held_out) & fitted)
-        calibration_rows = np.flatnonzero((session_index == held_out) & fitted)
+        # The level is the held-out session's: its own fitted rows, or its recording's training blocks.
+        held_recordings = np.unique(recording[test])
+        same_recording = (np.flatnonzero((session_index != held_out) & fitted & (recording == held_recordings[0]))
+                          if held_recordings.size == 1 else np.empty(0, dtype=np.int64))
+        calibration_rows = (same_recording if same_recording.size
+                            else np.flatnonzero((session_index == held_out) & fitted))
         if test.size == 0 or train.size == 0 or calibration_rows.size == 0:
             continue
         # From the FULL training count, not the subsample's, so the shrinkage does not move with the cap.
@@ -190,8 +203,8 @@ def loso_added_deviance(full: np.ndarray, base: np.ndarray, spikes: np.ndarray,
                                                irls_steps)
                 # Only the slopes are carried to the held-out session; its intercept is refitted.
                 offset = design[test] @ coefficients[1:]
-            # Recalibrated on the held-out session's fit rows, so the scored set's composition cannot
-            # decide how much of an effect the intercept absorbs.
+            # Recalibrated on fit rows (the held-out session's, or its recording's training blocks'), so
+            # the scored set's composition cannot decide how much of an effect the intercept absorbs.
             if design.shape[1] == 0:
                 calibration_offset = np.zeros(calibration_rows.size, dtype=np.float64)
             else:
@@ -252,7 +265,8 @@ def feature_gating_statistic(feature_vocal: np.ndarray, feature_quiet: np.ndarra
                              vocal: np.ndarray, spikes_universe: np.ndarray,
                              spikes_quiet: np.ndarray, session_universe: np.ndarray,
                              session_quiet: np.ndarray, settings: dict,
-                             fit_rows: np.ndarray = None) -> dict:
+                             fit_rows: np.ndarray = None, recording_universe: np.ndarray | None = None,
+                             recording_quiet: np.ndarray | None = None) -> dict:
     """
     Description
     -----------
@@ -279,6 +293,9 @@ def feature_gating_statistic(feature_vocal: np.ndarray, feature_quiet: np.ndarra
     fit_rows (np.ndarray)
         Boolean mask of universe rows the universe-scored terms are fitted on; every row is scored
         regardless. ``None`` fits on everything.
+    recording_universe, recording_quiet (np.ndarray | None)
+        Recording session for the two row sets, which owns each held-out level
+        (:func:`loso_added_deviance`); None treats every session as its own recording.
 
     Returns
     -------
@@ -297,13 +314,13 @@ def feature_gating_statistic(feature_vocal: np.ndarray, feature_quiet: np.ndarra
     quiet_blocks = gating_terms(feature_quiet, np.zeros_like(feature_quiet))
 
     main = loso_added_deviance(*quiet_blocks["feature_main"], spikes_quiet, session_quiet,
-                               ridge, steps, calibration)
+                               ridge, steps, calibration, None, recording_quiet)
     vocal_main = loso_added_deviance(*blocks["vocal_main"], spikes_universe, session_universe,
-                                     ridge, steps, calibration, fit_rows)
+                                     ridge, steps, calibration, fit_rows, recording_universe)
     interaction = loso_added_deviance(*blocks["interaction"], spikes_universe, session_universe,
-                                      ridge, steps, calibration, fit_rows)
+                                      ridge, steps, calibration, fit_rows, recording_universe)
     additive = loso_added_deviance(*blocks["additive"], spikes_universe, session_universe,
-                                   ridge, steps, calibration, fit_rows)
+                                   ridge, steps, calibration, fit_rows, recording_universe)
 
     # The sign comes from a strongly ridged fit and the magnitude from the deviance, since an unridged
     # interaction coefficient can quasi-separate.
@@ -560,6 +577,8 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
     bookkeeping: dict = {}
     feature_names = None
 
+    # Every session-level quantity belongs to a recording session, shared by the blocks of one.
+    _recordings, recording_of_slot = recording_groups(list(unit["vocal_sessions"]))
     for slot, session_id in enumerate(unit["vocal_sessions"]):
         session = per_session[session_id]
         series = np.asarray(session["feature_time_series"], dtype=np.float64)
@@ -646,14 +665,18 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
             "vocal": stack(vocal_parts),
             "spikes": stack(spike_parts),
             "session_index": stack(index_parts).astype(np.int64),
+            "recording_index": recording_of_slot[stack(index_parts).astype(np.int64)],
             "fit_rows": stack(fit_parts).astype(bool),
             "features_quiet": rows(quiet_feature_parts, width),
             "spikes_quiet": stack(quiet_spike_parts),
             "session_quiet": stack(quiet_index_parts).astype(np.int64),
+            "recording_quiet": recording_of_slot[stack(quiet_index_parts).astype(np.int64)],
             # every quiet frame, so the null can redraw the quiet-only subsample from shifted labels
             "frames_quiet_all": stack(quiet_all_frame_parts).astype(np.int64),
             "features_quiet_all": rows(quiet_all_feature_parts, width),
             "session_quiet_all": stack(quiet_all_index_parts).astype(np.int64),
+            "recording_quiet_all": recording_of_slot[stack(quiet_all_index_parts).astype(np.int64)],
+            "recording_of_slot": recording_of_slot,
             "feature_names": feature_names or [],
             "per_session": bookkeeping}
 
@@ -665,7 +688,8 @@ def gating_null(universe: dict, feature_index: int, settings: dict, guard_second
     -----------
     The circular-shift null for one feature, driving every statistic from the same draws.
 
-    Per draw each session's spike train is circularly shifted. The vocal-plus-quiet
+    Per draw each recording session's spike train is circularly shifted, one lag per recording shared
+    by its blocks. The vocal-plus-quiet
     universe is relabelled at its fixed positions; the quiet-only rows are redrawn from the shifted
     labels by :func:`quiet_subsample_rows`, as the observed rows were. Because all statistics come from
     the same draw, ``difference`` is a paired null for the ``delta_f > beta_V`` condition.
@@ -700,6 +724,7 @@ def gating_null(universe: dict, feature_index: int, settings: dict, guard_second
     vocal = universe["vocal"]
     frames, frames_quiet_all = universe["frames"], universe["frames_quiet_all"]
     index, index_quiet_all = universe["session_index"], universe["session_quiet_all"]
+    recording_of_slot = universe["recording_of_slot"]
     zeros_per_spike = settings["quiet_zeros_per_spike"]
 
     values = {key: np.empty(n_draws, dtype=np.float64)
@@ -708,10 +733,13 @@ def gating_null(universe: dict, feature_index: int, settings: dict, guard_second
         rng = np.random.default_rng((int(seed), int(feature_index), int(start + draw)))
         spikes = np.empty(frames.size, dtype=np.float64)
         quiet_feature_parts, quiet_spike_parts, quiet_index_parts = [], [], []
+        shifts = {}
         for slot, train in universe["spike_frames"].items():
             n_frames, fps = universe["n_frames"][slot], universe["fps"][slot]
-            shift = sample_circular_shift(rng, n_frames, fps, guard_seconds)
-            shifted = shifted_spike_frames(train, shift, fps, n_frames)
+            recording = int(recording_of_slot[slot])
+            if recording not in shifts:
+                shifts[recording] = sample_circular_shift(rng, n_frames, fps, guard_seconds)
+            shifted = shifted_spike_frames(train, shifts[recording], fps, n_frames)
             occupancy = np.zeros(n_frames, dtype=bool)
             occupancy[np.clip(shifted, 0, n_frames - 1)] = True
             mask = index == slot
@@ -724,10 +752,11 @@ def gating_null(universe: dict, feature_index: int, settings: dict, guard_second
             quiet_spike_parts.append(occupancy[frames_quiet_all[chosen]].astype(np.float64))
             quiet_index_parts.append(index_quiet_all[chosen])
 
+        quiet_index = np.concatenate(quiet_index_parts)
         drawn = feature_gating_statistic(feature, np.concatenate(quiet_feature_parts), vocal, spikes,
-                                         np.concatenate(quiet_spike_parts), index,
-                                         np.concatenate(quiet_index_parts), settings,
-                                         universe["fit_rows"])
+                                         np.concatenate(quiet_spike_parts), index, quiet_index, settings,
+                                         universe["fit_rows"], universe["recording_index"],
+                                         recording_of_slot[quiet_index])
         values["interaction"][draw] = drawn["interaction"]
         values["vocal_main"][draw] = drawn["vocal_main"]
         values["feature_main"][draw] = drawn["feature_main"]

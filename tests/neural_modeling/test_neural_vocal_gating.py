@@ -21,6 +21,11 @@ import polars as pls
 import pytest
 
 from usv_playpen.neural_modeling import neural_vocal_gating as gating_module
+from usv_playpen.neural_modeling.deviance_metrics import (
+    bernoulli_deviance,
+    calibrate_intercept,
+    newton_logistic,
+)
 from usv_playpen.neural_modeling.neural_significance import benjamini_hochberg
 from usv_playpen.neural_modeling.neural_vocal_gating import (
     check_settings,
@@ -201,6 +206,48 @@ class TestTheStatistic:
         with pytest.raises(ValueError, match="at least two sessions"):
             loso_added_deviance(*blocks["feature_main"], np.zeros(10), np.zeros(10),
                                 0.02, 5, 5)
+
+
+class TestBlocksShareTheirRecording:
+    """A held-out block of a unit recorded in one session takes its recording's level, set on the training
+    blocks, not a level of its own."""
+
+    def test_a_held_out_blocks_intercept_comes_from_its_recordings_training_blocks(self):
+        """
+        Description
+        -----------
+        With three blocks of one recording, the first fold's added deviance must be exactly the one whose
+        held-out intercepts (of the full and of the intercept-only model) are calibrated on the training
+        blocks' rows with the slopes frozen, and must differ from the session case, where they are
+        calibrated on the held-out rows themselves.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        rng = np.random.default_rng(31)
+        n = 900
+        index = np.repeat([0, 1, 2], n // 3)
+        feature = rng.normal(size=n)
+        spikes = (rng.random(n) < 1.0 / (1.0 + np.exp(-(-2.0 + feature + 0.8 * (index == 0))))).astype(float)
+        full, base = feature[:, None], np.empty((n, 0))
+        block = loso_added_deviance(full, base, spikes, index, 0.01, 25, 25, None, np.zeros(n, dtype=np.int64))
+        session = loso_added_deviance(full, base, spikes, index, 0.01, 25, 25, None, None)
+
+        test, train = np.flatnonzero(index == 0), np.flatnonzero(index != 0)
+        ridge = 0.01 * float(train.size)
+        coefficients = newton_logistic(np.hstack([np.ones((n, 1)), full])[train], spikes[train],
+                                       np.array([0.0, ridge]), 25)
+        full_level = calibrate_intercept(full[train] @ coefficients[1:], spikes[train], 25)
+        base_level = calibrate_intercept(np.zeros(train.size), spikes[train], 25)
+        expected = (bernoulli_deviance(np.full(test.size, base_level), spikes[test])
+                    - bernoulli_deviance(full[test] @ coefficients[1:] + full_level, spikes[test]))
+        assert block["per_fold"][0]["added"] == pytest.approx(expected, rel=1e-10)
+        assert session["per_fold"][0]["added"] != pytest.approx(expected, rel=1e-3)
 
 
 class TestTheVerdict:
@@ -627,6 +674,9 @@ class TestTheNull:
                 "n_frames": dict.fromkeys(range(n_sessions), per * 3),
                 "fps": dict.fromkeys(range(n_sessions), 100.0),
                 "fit_rows": np.ones(n, dtype=bool),
+                # each session its own recording
+                "recording_index": index, "recording_quiet": index[quiet_rows],
+                "recording_quiet_all": index[quiet_rows], "recording_of_slot": np.arange(n_sessions),
                 "feature_names": ["f0"], "per_session": {}}
 
     def test_all_four_arrays_come_back_aligned(self):

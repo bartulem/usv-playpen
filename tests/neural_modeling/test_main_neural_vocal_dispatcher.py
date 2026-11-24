@@ -520,6 +520,8 @@ def _vocal_events() -> dict:
         "counts": counts,
         "positions": positions,
         "session_index": sessions,
+        # Every session here is its own recording, so the recording index equals the session index.
+        "recording_index": sessions,
         "session_ids": session_ids,
         "per_session": {
             session_id: {"duration_seconds": duration} for session_id in session_ids
@@ -528,6 +530,7 @@ def _vocal_events() -> dict:
             "counts": np.concatenate(window_counts).astype(np.float64),
             "labels": np.concatenate(window_labels),
             "session_index": np.concatenate(window_sessions),
+            "recording_index": np.concatenate(window_sessions),
             "edges": np.concatenate(window_edges),
             "width": width,
         },
@@ -864,7 +867,8 @@ class TestTheAnalysisSteps:
         events = _vocal_events()
         two = events["session_index"] < 2
         events = {**events, "counts": events["counts"][two], "positions": events["positions"][two],
-                  "session_index": events["session_index"][two], "session_ids": events["session_ids"][:2],
+                  "session_index": events["session_index"][two], "recording_index": events["recording_index"][two],
+                  "session_ids": events["session_ids"][:2],
                   "vocalization_start": events["vocalization_start"][two],
                   "category_labels": events["category_labels"][two]}
         settings = _fast_decoding_settings()
@@ -935,6 +939,7 @@ class TestTheAnalysisSteps:
         design = {
             "positions": positions,
             "session_index": events["session_index"][kept],
+            "recording_index": events["recording_index"][kept],
             "kept": kept,
             "region_labels": np.tile(np.arange(6.0), kept.size // 6 + 1)[: kept.size],
             "per_session": {s: {"n_dropped_short_history": 0} for s in events["session_ids"]},
@@ -1063,6 +1068,7 @@ class TestTheAnalysisSteps:
         generator = np.random.default_rng(5)
         evidence = generator.dirichlet(np.ones(classes.size), kept.size)
         design = {"behaviour": np.zeros((kept.size, 3)), "session_index": events["session_index"][kept],
+                  "recording_index": events["recording_index"][kept],
                   "kept": kept, "positions": events["positions"][kept],
                   "per_session": {s: {"n_dropped_short_history": 0} for s in events["session_ids"]}}
         artifact = {"target": "multinomial", "features": ["allo_yaw-head"], "classes": classes,
@@ -1195,6 +1201,10 @@ def _gating_universe() -> dict:
         # Two sessions, both with quiet frames: every term is scored leave-one-session-out.
         "session_index": np.repeat([0, 1], 100),
         "session_quiet": np.repeat([0, 1], 50),
+        # Each session is its own recording.
+        "recording_index": np.repeat([0, 1], 100),
+        "recording_quiet": np.repeat([0, 1], 50),
+        "recording_of_slot": np.array([0, 1]),
         "fit_rows": None,
         "per_session": {0: {"n_vocal_frames": 50, "n_quiet_frames_fitted": 50},
                         1: {"n_vocal_frames": 50, "n_quiet_frames_fitted": 50}},
@@ -2061,6 +2071,7 @@ class TestTheOnsetNestedStep:
         kept = np.arange(3, windows["counts"].size)
         design = {"behaviour": np.zeros((kept.size, 3)), "kept": kept, "counts": windows["counts"][kept],
                   "labels": windows["labels"][kept], "session_index": windows["session_index"][kept],
+                  "recording_index": windows["recording_index"][kept],
                   "edges": windows["edges"][kept], "feature_names": ["head-head"],
                   "per_session": {s: {"n_windows_offered": 120, "n_windows_with_full_history": 119,
                                       "n_dropped_short_history": 1} for s in events["session_ids"]}}
@@ -2082,14 +2093,14 @@ class TestTheOnsetNestedStep:
                                    settings["cohort"]["single_session_blocks"])
         kappas, priors = onset_behaviour_tilts(folds, design["labels"], log_odds,
                                                settings["nested_vocal_decoding"]["behaviour_prior"]["kappa_grid"])
-        observed = nested_onset_statistic(design["counts"], design["labels"], design["session_index"],
+        observed = nested_onset_statistic(design["counts"], design["labels"], design["recording_index"],
                                           design["edges"], folds, axis, crossfit, priors, kappas)
         n_workers, state = spawned[0]
         assert n_workers == 2
         assert state["log_priors"] is priors or all(np.allclose(a, b)
                                                     for a, b in zip(state["log_priors"], priors, strict=True))
         trains = dict(enumerate(events["spike_seconds"][s] for s in events["session_ids"]))
-        serial = vocal_occurrence_jitter_null({**{k: design[k] for k in ("counts", "labels", "session_index", "edges")},
+        serial = vocal_occurrence_jitter_null({**{k: design[k] for k in ("counts", "labels", "session_index", "recording_index", "edges")},
                                                "width": windows["width"]},
                                               trains, state["durations"], 0, 4, 7, 3.0, folds, axis, crossfit,
                                               priors)

@@ -28,7 +28,7 @@ from .deviance_metrics import (
     groups_left_out,
     pooled_calibrated_explained_deviance,
 )
-from .neural_design_assembly import spike_labels_at_frames
+from .neural_design_assembly import recording_groups, spike_labels_at_frames
 from .shift_null_inference import (
     escalated_empirical_pvalue,
     sample_circular_shift,
@@ -282,9 +282,10 @@ def pooled_transfer_null(fold_results: list, per_session: dict, session_ids: lis
     -----------
     Null distribution of the pooled transfer score.
 
-    Each draw shifts every session's spike train independently, relabels that session's transfer frames
-    (or recounts its bins), and re-scores the pooled, still-frozen predictions. Independent shifts give
-    the joint draw space its size.
+    Each draw shifts every recording session's spike train independently, relabels that session's
+    transfer frames (or recounts its bins), and re-scores the pooled, still-frozen predictions. Independent
+    shifts give the joint draw space its size. The blocks of a unit recorded in one session share its spike
+    train, so they share its shift: one lag per recording per draw, applied to every block of it.
 
     Parameters
     ----------
@@ -299,7 +300,7 @@ def pooled_transfer_null(fold_results: list, per_session: dict, session_ids: lis
     n_shuffles (int)
         Number of draws.
     seed (int)
-        Base seed; each session's shifts are drawn from its own stream.
+        Base seed; each recording session's shifts are drawn from its own stream.
     guard_seconds (float)
         Excluded band at both ends of the circular wrap.
     calibration_steps (int)
@@ -320,22 +321,25 @@ def pooled_transfer_null(fold_results: list, per_session: dict, session_ids: lis
         ``n_shuffles`` pooled null scores.
     """
 
+    recordings, recording_index = recording_groups(session_ids)
     if transfer_settings["grain"] == "count":
         width = int(fold_results[0]["bin_width_frames"])
         bin_eta = np.concatenate([result["bin_eta"] for result in fold_results])
-        bin_index = np.concatenate([np.full(result["n_bins"], index) for index, result in enumerate(fold_results)])
+        bin_index = np.concatenate([np.full(result["n_bins"], recording_index[index])
+                                    for index, result in enumerate(fold_results)])
         bins_by_session = {session_id: bin_frame_matrix(vocal_frames_by_session[session_id], width)
                            for session_id in session_ids}
-        generators = [np.random.default_rng(seed + index) for index in range(len(session_ids))]
+        generators = [np.random.default_rng(seed + index) for index in range(len(recordings))]
         null = np.empty(n_shuffles, dtype=np.float64)
         for draw in range(n_shuffles):
             drawn = []
+            shifts = [sample_circular_shift(generators[index], per_session[first]["n_frames"],
+                                            per_session[first]["fps"], guard_seconds)
+                      for index, first in enumerate(recordings.values())]
             for index, session_id in enumerate(session_ids):
                 session = per_session[session_id]
-                shifted = shifted_spike_frames(
-                    session["spike_frames"],
-                    sample_circular_shift(generators[index], session["n_frames"], session["fps"], guard_seconds),
-                    session["fps"], session["n_frames"])
+                shifted = shifted_spike_frames(session["spike_frames"], shifts[recording_index[index]],
+                                               session["fps"], session["n_frames"])
                 bins = bins_by_session[session_id]
                 drawn.append(counts_per_frame(shifted, session["n_frames"])[bins].sum(axis=1) if bins.size
                              else np.zeros(0, dtype=np.int64))
@@ -344,32 +348,33 @@ def pooled_transfer_null(fold_results: list, per_session: dict, session_ids: lis
         return null
 
     eta = np.concatenate([result["eta"] for result in fold_results])
-    session_index = np.concatenate([np.full(result["labels"].size, index)
+    session_index = np.concatenate([np.full(result["labels"].size, recording_index[index])
                                     for index, result in enumerate(fold_results)])
 
     # Draws are processed in chunks sized by a memory budget, since a full (n_shuffles, n_frames) label
-    # matrix grows without bound with the draw count. Each session keeps one generator across chunks,
+    # matrix grows without bound with the draw count. Each recording keeps one generator across chunks,
     # so the shifts are exactly those an unchunked run would draw.
     total_frames = max(int(eta.size), 1)
     block_bytes = int(null_block_megabytes * 1024 * 1024)
     chunk = int(max(1, min(n_shuffles, block_bytes // (total_frames * 8))))
-    generators = [np.random.default_rng(seed + index) for index in range(len(session_ids))]
+    generators = [np.random.default_rng(seed + index) for index in range(len(recordings))]
 
     null = np.empty(n_shuffles, dtype=np.float64)
     for start in range(0, n_shuffles, chunk):
         stop = min(start + chunk, n_shuffles)
+        # Each recording's shifts for this chunk, drawn from its own stream in draw order.
+        shifts = [[sample_circular_shift(generators[index], per_session[first]["n_frames"],
+                                         per_session[first]["fps"], guard_seconds)
+                   for _ in range(stop - start)]
+                  for index, first in enumerate(recordings.values())]
         pieces = []
         for index, session_id in enumerate(session_ids):
             session = per_session[session_id]
             frames = vocal_frames_by_session[session_id]
-            generator = generators[index]
             block = np.empty((stop - start, frames.size), dtype=np.float64)
             for draw in range(stop - start):
-                shifted = shifted_spike_frames(
-                    session["spike_frames"],
-                    sample_circular_shift(generator, session["n_frames"], session["fps"],
-                                          guard_seconds),
-                    session["fps"], session["n_frames"])
+                shifted = shifted_spike_frames(session["spike_frames"], shifts[recording_index[index]][draw],
+                                               session["fps"], session["n_frames"])
                 block[draw] = spike_labels_at_frames(shifted, frames, session["n_frames"])
             pieces.append(block)
         stacked = np.concatenate(pieces, axis=1)
@@ -381,7 +386,8 @@ def pooled_transfer_null(fold_results: list, per_session: dict, session_ids: lis
 
 def leave_one_session_out_scores(eta: np.ndarray, labels: np.ndarray, session_index: np.ndarray,
                                  session_ids: list, calibration_steps: int,
-                                 scorer=pooled_calibrated_explained_deviance) -> dict:
+                                 scorer=pooled_calibrated_explained_deviance,
+                                 group_index: np.ndarray | None = None) -> dict:
     """
     Description
     -----------
@@ -405,8 +411,11 @@ def leave_one_session_out_scores(eta: np.ndarray, labels: np.ndarray, session_in
     calibration_steps (int)
         Maximum Newton iterations for each recalibration.
     scorer (Callable)
-        ``(x, y, session_index, calibration_steps) -> (score, slope)``: the per-frame pooled calibration
+        ``(x, y, group_index, calibration_steps) -> (score, slope)``: the per-frame pooled calibration
         by default, or the Poisson one (with its exposure bound) under the count grain.
+    group_index (np.ndarray | None)
+        Calibration group per frame: the recording session, so the remaining blocks of one recording keep
+        one intercept. None groups by ``session_index``.
 
     Returns
     -------
@@ -417,10 +426,11 @@ def leave_one_session_out_scores(eta: np.ndarray, labels: np.ndarray, session_in
 
     if len(session_ids) < 2:
         return {}
+    groups = session_index if group_index is None else group_index
     scores = {}
     for index, session_id in enumerate(session_ids):
         keep = session_index != index
-        score, slope = scorer(eta[keep], labels[keep], session_index[keep], calibration_steps)
+        score, slope = scorer(eta[keep], labels[keep], groups[keep], calibration_steps)
         scores[session_id] = {"score": score, "slope": slope}
     return scores
 
@@ -432,8 +442,10 @@ def combine_folds(fold_results: list, per_session: dict, session_ids: list,
     -----------
     Pool every fold's held-out predictions into one transfer result, with its null and p-value.
 
-    One shared calibration slope is fitted across all folds, with a separate intercept per session, so
-    the slope is estimated on every fold at once while sessions keep their own level.
+    One shared calibration slope is fitted across all folds, with a separate intercept per recording
+    session, so the slope is estimated on every fold at once while sessions keep their own level. The
+    blocks of a unit recorded in one session share that session's intercept: no vocal frame was fitted
+    by the quiet model, so every block is held out, and the session's level is estimated on all of them.
     A p-value on the empirical floor is flagged as such.
 
     Parameters
@@ -457,7 +469,7 @@ def combine_folds(fold_results: list, per_session: dict, session_ids: list,
         ``score``, ``slope``, ``p``, ``at_floor``, ``n_frames``, ``n_bins``, ``bin_width_frames``,
         ``grain``, ``universe``, ``null``, the leave-one-session-out descriptors
         ``leave_one_session_out`` and ``min_leave_one_session_out``, ``left_out_sessions``
-        (``{session_id: reason}`` for every session or block the observed score left out, see
+        (``{recording session: reason}`` for every recording the observed score left out, see
         :func:`~usv_playpen.neural_modeling.deviance_metrics.groups_left_out`), and the per-fold diagnostics
         under ``folds``.
     """
@@ -477,6 +489,7 @@ def combine_folds(fold_results: list, per_session: dict, session_ids: list,
 
     calibration_steps = settings["kinematic_encoding"]["solver"]["calibration_steps"]
     grain = transfer_settings["grain"]
+    recordings, recording_index = recording_groups(session_ids)
     if grain not in TRANSFER_GRAINS:
         msg = f"transfer.grain must be one of {TRANSFER_GRAINS}; got {grain!r}."
         raise ValueError(msg)
@@ -489,6 +502,8 @@ def combine_folds(fold_results: list, per_session: dict, session_ids: list,
         labels = np.concatenate([result["bin_counts"] for result in fold_results])
         session_index = np.concatenate([np.full(result["n_bins"], index)
                                         for index, result in enumerate(fold_results)])
+        group_index = np.concatenate([np.full(result["n_bins"], recording_index[index])
+                                      for index, result in enumerate(fold_results)])
         scorer = partial(frozen_model_score, family="poisson", exposure=float(width),
                          calibration=settings["kinematic_encoding"]["calibration"])
     else:
@@ -497,14 +512,17 @@ def combine_folds(fold_results: list, per_session: dict, session_ids: list,
         labels = np.concatenate([result["labels"] for result in fold_results])
         session_index = np.concatenate([np.full(result["labels"].size, index)
                                         for index, result in enumerate(fold_results)])
+        group_index = np.concatenate([np.full(result["labels"].size, recording_index[index])
+                                      for index, result in enumerate(fold_results)])
         scorer = partial(frozen_model_score, family="bernoulli", exposure=1.0,
                          calibration=settings["kinematic_encoding"]["calibration"])
-    score, slope = scorer(eta, labels, session_index, calibration_steps)
-    left_out_sessions = {session_ids[index]: reason for index, reason in
-                         groups_left_out(labels, session_index, "poisson" if grain == "count" else "bernoulli",
+    # One intercept per recording session: the blocks of a unit recorded in one session share it.
+    score, slope = scorer(eta, labels, group_index, calibration_steps)
+    left_out_sessions = {list(recordings)[index]: reason for index, reason in
+                         groups_left_out(labels, group_index, "poisson" if grain == "count" else "bernoulli",
                                          settings["kinematic_encoding"]["calibration"]).items()}
     leave_one_session_out = leave_one_session_out_scores(eta, labels, session_index, session_ids,
-                                                         calibration_steps, scorer)
+                                                         calibration_steps, scorer, group_index)
     # `finite_min`, not Python's `min`: a NaN re-pool would make the minimum depend on session order.
     min_leave_one_session_out = (finite_min([entry["score"] for entry in leave_one_session_out.values()])
                                  if leave_one_session_out else float("nan"))

@@ -668,7 +668,6 @@ def tuning_data(unit_uid: str, paths: FigurePaths, identity: dict, encoding: dic
                                          vocalization["clean_against"],
                                          vocalization)
     n_lags = int(encoding["n_lags"])
-    fps = float(encoding["fps"])
     features = [int(index) for index in encoding["selected_indices"]]
     filters = np.asarray(encoding["filter"]).reshape(len(features), n_lags)
     intercept = float(encoding["filter_intercept"])
@@ -2880,7 +2879,8 @@ def category_confusion(unit_uid: str, events: dict, identity_section: dict, sett
     counts = np.asarray(events["counts"], dtype=np.float64)[kept]
     session_index = np.asarray(events["session_index"])[kept]
     folds = category_context(codes, session_index, np.asarray(events["vocalization_start"])[kept],
-                             int(settings["cohort"]["single_session_blocks"]))
+                             int(settings["cohort"]["single_session_blocks"]),
+                             np.asarray(events["recording_index"])[kept])
     n_categories = values.size
     log_ratio = np.full((codes.size, n_categories), np.nan)
     stored = iter(identity_section["per_fold"])
@@ -2893,7 +2893,9 @@ def category_confusion(unit_uid: str, events: dict, identity_section: dict, sett
         if entry["held_out"] != fold["held_out"]:
             msg = f"{unit_uid}: rebuilt fold {fold['held_out']} lines up with stored fold {entry['held_out']}"
             raise ValueError(msg)
-        exposure = (max(float(counts[test_rows].mean()), floor) / max(float(counts[train_rows].mean()), floor))
+        # The held-out level as the decoder sets it: the session's own, or its recording's training blocks'.
+        level_source = fold["level_rows"] if fold["level_rows"].size else test_rows
+        exposure = (max(float(counts[level_source].mean()), floor) / max(float(counts[train_rows].mean()), floor))
         posterior = category_posterior(counts[test_rows], np.asarray(entry["rates"], dtype=np.float64),
                                        fold["prior"], float(entry["alpha"]), exposure, floor)
         log_ratio[test_rows] = posterior - np.log(fold["prior"])[None, :]
@@ -3070,7 +3072,8 @@ def nested_event_data(unit_uid: str, paths: FigurePaths, identity: dict, setting
     folds = decoding_context(positions, session_index, settings["vocal_decoding"],
                              settings["vocalizations"]["torus_period"],
                              np.asarray(events["vocalization_start"])[design["kept"]],
-                             int(settings["cohort"]["single_session_blocks"]))
+                             int(settings["cohort"]["single_session_blocks"]),
+                             np.asarray(design["recording_index"]))
     kappas, priors = behaviour_priors(folds, design["behaviour_control"]["predicted_positions"],
                                       positions, nested)
     session_ids = list(events["session_ids"])
@@ -3153,7 +3156,8 @@ def category_nested_event_data(unit_uid: str, paths: FigurePaths, identity: dict
     log_evidence = np.log(np.maximum(evidence[labelled][:, columns], 1e-300))
     session_index = np.asarray(design["session_index"])[labelled]
     times = np.asarray(events["vocalization_start"])[design["kept"]][labelled]
-    folds = category_context(codes, session_index, times, int(settings["cohort"]["single_session_blocks"]))
+    folds = category_context(codes, session_index, times, int(settings["cohort"]["single_session_blocks"]),
+                             np.asarray(design["recording_index"])[labelled])
     kappas, tilts = category_behaviour_tilts(folds, codes, log_evidence, nested["behaviour_prior"]["kappa_grid"])
     surface = settings["vocal_decoding"]["category_surface"]
     session_ids = list(events["session_ids"])

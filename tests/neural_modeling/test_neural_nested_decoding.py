@@ -395,13 +395,14 @@ class TestNestedDesign:
         Returns
         -------
         events (dict)
-            ``vocalization_start``, ``session_index``, ``counts``, ``positions``, ``region_labels`` and
-            ``session_ids``.
+            ``vocalization_start``, ``session_index``, ``recording_index`` (each session its own
+            recording), ``counts``, ``positions``, ``region_labels`` and ``session_ids``.
         """
         starts = np.concatenate([np.arange(n_per_session) * 1.0 + first_frame / 10.0
                                  for _ in range(n_sessions)])
         return {"vocalization_start": starts,
                 "session_index": np.repeat(np.arange(n_sessions), n_per_session),
+                "recording_index": np.repeat(np.arange(n_sessions), n_per_session),
                 "counts": np.tile(np.arange(n_per_session, dtype=float), n_sessions),
                 "positions": np.tile(np.linspace(0.0, 0.9, n_per_session)[:, None], (n_sessions, 2)),
                 "region_labels": np.tile(np.arange(n_per_session, dtype=float), n_sessions),
@@ -521,6 +522,35 @@ class TestNestedDesign:
             assert abs(column.mean()) < 1e-9        # each session centred on its own mean
             assert abs(column.std() - 1.0) < 1e-9
 
+    def test_the_blocks_of_one_recording_are_z_scored_together(self):
+        """
+        Description
+        -----------
+        Two slots that are blocks of one recording share one mean and one spread: the column is centred
+        and scaled over both blocks together, not within each, so a block that fires more than the other
+        keeps its higher z.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        names = ["a"]
+        events = self._events(n_sessions=2)
+        events["recording_index"] = np.zeros(events["session_index"].size, dtype=np.int64)
+        events["counts"] = np.concatenate([np.array([0.0, 0, 0, 10, 10, 10]),
+                                           np.array([100.0, 100, 100, 200, 200, 200])])
+        design = nested_design(events, self._per_session(events["session_ids"], names),
+                               names, self.N_LAGS, 0.05)
+        column = design["neural"][:, 0]
+        assert abs(column.mean()) < 1e-9
+        assert abs(column.std() - 1.0) < 1e-9
+        assert column[design["session_index"] == 1].mean() > column[design["session_index"] == 0].mean()
+        np.testing.assert_array_equal(design["recording_index"], np.zeros(column.size, dtype=np.int64))
+
     def test_a_near_silent_session_cannot_produce_an_enormous_z(self):
         """The sigma floor keeps a session with almost no count spread from producing a huge z-score
         that would dominate the fit."""
@@ -601,7 +631,7 @@ class TestNestedScores:
         regions = np.tile(np.arange(6, dtype=float), n // 6 + 1)[:n]
         return {"behaviour": behaviour,
                 "neural": ((column - column.mean()) / column.std())[:, None],
-                "positions": positions, "session_index": session_index,
+                "positions": positions, "session_index": session_index, "recording_index": session_index,
                 "region_labels": regions,
                 "feature_names": [f"f{i}" for i in range(n_features)],
                 "kept": np.arange(n), "per_session": {}}
@@ -1109,6 +1139,7 @@ class TestOnsetNestedDesign:
         return {"session_ids": ["s0", "s1"],
                 "occurrence_windows": {"edges": np.tile(edges, 2), "labels": np.tile(labels, 2),
                                        "session_index": np.repeat([0, 1], edges.size),
+                                       "recording_index": np.repeat([0, 1], edges.size),
                                        "counts": np.arange(2 * edges.size, dtype=float), "width": 0.1}}
 
     def test_every_window_is_anchored_at_the_frame_before_its_centre(self):
