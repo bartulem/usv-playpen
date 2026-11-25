@@ -38,6 +38,7 @@ from usv_playpen.neural_modeling.deviance_metrics import (
     area_under_roc,
     batched_calibrated_explained_deviance,
     batched_crossfitted_explained_deviance,
+    batched_transferred_calibration_scores,
     binned_calibrated_explained_deviance,
     calibrated_explained_deviance,
     contiguous_blocks,
@@ -49,7 +50,6 @@ from usv_playpen.neural_modeling.deviance_metrics import (
     frozen_model_score,
     groups_left_out,
     intercept_only_deviance,
-    level_matched_intercept,
     newton_logistic,
     newton_poisson,
     pooled_calibrated_explained_deviance,
@@ -950,15 +950,43 @@ class TestSchemeRouting:
         )
 
 
-class TestKnownLevel:
-    """A block of a session is scored at its recording's known level; only the scale is cross-fitted."""
+class TestTransferredCalibration:
+    """A block of a session is scored with the calibration fitted on its recording's training blocks."""
 
-    def test_the_level_matched_intercept_hits_the_known_rate(self):
+    @staticmethod
+    def _rows(seed: int, shift: float = 0.0) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Description
         -----------
-        For several scales and rates, the intercept returned by ``level_matched_intercept`` must put
-        the mean predicted probability over the scored rows at the known rate.
+        Reference rows and scored rows drawn from one logistic model ``logit p = -3 + eta``; the scored
+        rows' predictor is moved by ``shift``, as a block in which the animal behaves differently.
+
+        Parameters
+        ----------
+        seed (int)
+            Generator seed.
+        shift (float)
+            Offset added to the scored rows' predictor.
+
+        Returns
+        -------
+        reference_eta, reference_y, eta, y (np.ndarray)
+            Predictor and 0/1 labels of the reference and scored rows.
+        """
+        rng = np.random.default_rng(seed)
+        reference_eta = rng.normal(size=8000)
+        eta = rng.normal(size=3000) + shift
+        reference_y = (rng.random(reference_eta.size) < 1.0 / (1.0 + np.exp(3.0 - reference_eta))).astype(float)
+        y = (rng.random(eta.size) < 1.0 / (1.0 + np.exp(3.0 - eta))).astype(float)
+        return reference_eta, reference_y, eta, y
+
+    def test_the_score_equals_a_direct_fit_on_the_reference_rows(self):
+        """
+        Description
+        -----------
+        On the exact path, every draw's score must equal the explained deviance of the scored rows under
+        the logistic calibration fitted directly (``newton_logistic``) on that draw's reference rows, over
+        the reference rows' rate.
 
         Parameters
         ----------
@@ -968,19 +996,31 @@ class TestKnownLevel:
         -------
         None
         """
-        z = np.random.default_rng(11).normal(size=3000)
-        slopes = np.array([0.0, 0.5, 1.5])
-        rates = np.array([0.01, 0.07, 0.3])
-        intercept = level_matched_intercept(z, np.ones(z.size), slopes, rates, 60)
-        mean = (1.0 / (1.0 + np.exp(-(z[:, None] * slopes[None, :] + intercept[None, :])))).mean(axis=0)
-        np.testing.assert_allclose(mean, rates, rtol=1e-8)
+        reference_eta, _ry, eta, _y = self._rows(21)
+        rng = np.random.default_rng(22)
+        reference_labels = (rng.random((reference_eta.size, 4)) < 0.05 + 0.03 * (reference_eta[:, None] > 0)).astype(float)
+        labels = (rng.random((eta.size, 4)) < 0.05 + 0.03 * (eta[:, None] > 0)).astype(float)
+        scores, slopes = batched_transferred_calibration_scores(eta, labels, reference_eta, reference_labels, 60, 0)
+        z_reference = (reference_eta - reference_eta.mean()) / reference_eta.std()
+        z = (eta - reference_eta.mean()) / reference_eta.std()
+        for draw in range(4):
+            beta = newton_logistic(np.column_stack([z_reference, np.ones(z_reference.size)]),
+                                   reference_labels[:, draw], np.zeros(2), 60, np.zeros(z_reference.size))
+            linear = beta[0] * z + beta[1]
+            ll_model = float(np.sum(labels[:, draw] * linear - np.logaddexp(0.0, linear)))
+            rate = reference_labels[:, draw].mean()
+            logit = np.log(rate / (1.0 - rate))
+            ll_reference = float(np.sum(labels[:, draw] * logit - np.logaddexp(0.0, logit)))
+            assert scores[draw] == pytest.approx((ll_model - ll_reference) / -ll_reference, rel=1e-8, abs=1e-12)
+            assert slopes[draw] == pytest.approx(beta[0], rel=1e-8)
 
-    def test_the_batched_known_level_score_matches_the_scalar_rule(self):
+    def test_a_block_that_fires_more_because_its_predictor_is_higher_is_credited(self):
         """
         Description
         -----------
-        On the exact path (``n_bins = 0``) the batched cross-fitted score with a known level per draw
-        must equal the scalar score with the same known level, draw by draw.
+        A scored block whose predictor is higher than the training blocks', and whose rate is higher for
+        that reason, must score clearly above zero with a positive scale: the transferred calibration
+        predicts the higher rate from the predictor. An unrelated predictor must not score.
 
         Parameters
         ----------
@@ -990,47 +1030,22 @@ class TestKnownLevel:
         -------
         None
         """
-        eta, labels = _draw(n_frames=1500, n_draws=6, seed=12)
-        known = labels.mean(axis=0) * np.linspace(0.8, 1.2, labels.shape[1])
-        batched = batched_crossfitted_explained_deviance(eta, labels, 5, 40, 0, known)
-        scalar = [crossfitted_explained_deviance(eta, labels[:, d], np.zeros(eta.size, dtype=np.int64), 5,
-                                                 "bernoulli", 40, known_rate=float(known[d]))[0]
-                  for d in range(labels.shape[1])]
-        np.testing.assert_allclose(batched, scalar, rtol=1e-9, atol=1e-12)
-
-    def test_a_planted_predictor_scores_positive_at_a_known_level(self):
-        """
-        Description
-        -----------
-        A predictor that drives the labels must score clearly above zero with a positive scale when
-        the level is fixed at the true rate, and an unrelated predictor must not.
-
-        Parameters
-        ----------
-        None
-
-        Returns
-        -------
-        None
-        """
-        rng = np.random.default_rng(13)
-        eta = rng.normal(size=8000)
-        labels = (rng.random(eta.size) < 1.0 / (1.0 + np.exp(-(-3.0 + eta)))).astype(np.float64)
+        reference_eta, reference_y, eta, y = self._rows(23, shift=0.7)
         groups = np.zeros(eta.size, dtype=np.int64)
-        planted, slope = frozen_model_score(eta, labels, groups, 40, "bernoulli", 1.0, CROSSFIT,
-                                            float(labels.mean()))
-        unrelated, _ = frozen_model_score(rng.normal(size=eta.size), labels, groups, 40, "bernoulli", 1.0,
-                                          CROSSFIT, float(labels.mean()))
-        assert planted > 0.02
+        planted, slope = frozen_model_score(eta, y, groups, 60, "bernoulli", 1.0, CROSSFIT, (reference_eta, reference_y))
+        rng = np.random.default_rng(24)
+        unrelated, _ = frozen_model_score(rng.normal(size=eta.size), y, groups, 60, "bernoulli", 1.0, CROSSFIT,
+                                          (rng.normal(size=reference_eta.size), reference_y))
+        assert planted > 0.05
         assert slope > 0
-        assert abs(unrelated) < 0.01
+        assert unrelated < 0.01
 
-    def test_a_known_level_is_refused_where_it_is_undefined(self):
+    def test_the_scalar_score_matches_the_batched_null_path(self):
         """
         Description
         -----------
-        A known level applies to one Bernoulli group under the cross-fitted scheme only: the Poisson
-        family, two groups and the in-sample scheme must each raise ``ValueError``.
+        ``frozen_model_score`` with reference rows must equal ``frozen_model_null_scores`` on the exact path
+        for the same labels, so the observed score and its null draws follow one rule.
 
         Parameters
         ----------
@@ -1040,16 +1055,55 @@ class TestKnownLevel:
         -------
         None
         """
-        eta, labels = _draw(n_frames=1000, n_draws=1, seed=14)
-        y = labels[:, 0]
+        reference_eta, reference_y, eta, y = self._rows(25, shift=0.3)
+        groups = np.zeros(eta.size, dtype=np.int64)
+        scalar = frozen_model_score(eta, y, groups, 60, "bernoulli", 1.0, CROSSFIT, (reference_eta, reference_y))[0]
+        batched = frozen_model_null_scores(eta, y[:, None], 60, 0, CROSSFIT, reference_eta, reference_y[:, None])
+        assert batched[0] == pytest.approx(scalar, rel=1e-12)
+
+    def test_degenerate_rows_score_nan(self):
+        """
+        Description
+        -----------
+        A draw whose reference rows hold no spike, or whose scored rows hold no spike, has no defined score.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        reference_eta, reference_y, eta, y = self._rows(26)
+        labels = np.column_stack([y, np.zeros(eta.size), y])
+        reference_labels = np.column_stack([reference_y, reference_y, np.zeros(reference_eta.size)])
+        scores, _ = batched_transferred_calibration_scores(eta, labels, reference_eta, reference_labels, 60, 0)
+        assert np.isfinite(scores[0])
+        assert np.isnan(scores[1])
+        assert np.isnan(scores[2])
+
+    def test_a_transferred_calibration_is_refused_where_it_is_undefined(self):
+        """
+        Description
+        -----------
+        A transferred calibration applies to one Bernoulli group: the Poisson family and two groups must
+        raise ``ValueError``, as must reference predictor values given without reference labels.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        reference_eta, reference_y, eta, y = self._rows(27)
         one = np.zeros(eta.size, dtype=np.int64)
         two = (np.arange(eta.size) >= eta.size // 2).astype(np.int64)
         with pytest.raises(ValueError, match="single group"):
-            crossfitted_explained_deviance(eta, y, one, 5, "poisson", 30, known_rate=0.05)
+            frozen_model_score(eta, y, one, 30, "poisson", 1.0, CROSSFIT, (reference_eta, reference_y))
         with pytest.raises(ValueError, match="single group"):
-            crossfitted_explained_deviance(eta, y, two, 5, "bernoulli", 30, known_rate=0.05)
-        with pytest.raises(ValueError, match="cross-fitted calibration"):
-            frozen_model_score(eta, y, one, 30, "bernoulli", 1.0, {"scheme": "in_sample", "n_blocks": 5}, 0.05)
-        with pytest.raises(ValueError, match="cross-fitted calibration"):
-            frozen_model_null_scores(eta, labels, 30, 0, {"scheme": "in_sample", "n_blocks": 5}, np.array([0.05]))
-
+            frozen_model_score(eta, y, two, 30, "bernoulli", 1.0, CROSSFIT, (reference_eta, reference_y))
+        with pytest.raises(ValueError, match="together"):
+            frozen_model_null_scores(eta, y[:, None], 30, 0, CROSSFIT, reference_eta, None)

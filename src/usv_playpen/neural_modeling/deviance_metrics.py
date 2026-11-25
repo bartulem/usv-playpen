@@ -7,12 +7,14 @@ reference, computed on frames the model was not fitted on. The reference is the 
 and the predictor passes through a calibration (per-session intercepts and one shared scale) before it is
 scored. The shipped scheme cross-fits that calibration over contiguous blocks, so no scored frame helps
 estimate the numbers it is judged by. When the scored frames are a block of a session whose other blocks
-the model was fitted on, the session's level is already known, and the score fixes it there
-(:func:`level_matched_intercept`) instead of estimating a level for the block alone.
+the model was fitted on, the session's calibration is already known: it is fitted on those training
+blocks and carried over unchanged (:func:`batched_transferred_calibration_scores`), so no part of one
+session gets a calibration of its own.
 
 The module provides:
 - the scoring rule, :func:`frozen_model_score`, and its batched null-draw twin,
-  :func:`frozen_model_null_scores`, which dispatch to the cross-fitted or in-sample calibrations;
+  :func:`frozen_model_null_scores`, which dispatch to the cross-fitted, in-sample or transferred
+  calibrations;
 - the in-sample calibrations (binary, pooled binary, pooled Poisson) and their batched and binned
   null-draw versions;
 - the Newton cores for small logistic and Poisson fits;
@@ -874,58 +876,6 @@ def drop_uncrossfittable_groups(x: np.ndarray, y: np.ndarray, group_index: np.nd
     return x[keep], y[keep], group_index[keep]
 
 
-def level_matched_intercept(centre: np.ndarray, count: np.ndarray, slope: np.ndarray, rate: np.ndarray,
-                            n_steps: int) -> np.ndarray:
-    """
-    Description
-    -----------
-    The intercept that puts a calibrated logistic predictor at a known level: for each draw, the ``a`` at
-    which the mean predicted probability over the scored rows, ``mean(sigmoid(a + b z))``, equals ``rate``.
-
-    This is how a frozen model is scored on a block of a session whose level is already known from the
-    session's other blocks: the scale ``b`` is still cross-fitted on the scored rows, but the level is
-    fixed at the session's spike rate, so no part of one session gets a level of its own. The mean is
-    taken over the scored rows' predictor values only, never their labels.
-
-    The equation is monotone in ``a``, so Newton from ``logit(rate)`` converges; each step is bounded to
-    keep the first steps stable when ``b`` is large.
-
-    Parameters
-    ----------
-    centre (np.ndarray)
-        ``(n_cells,)`` standardised predictor per cell (one cell per row on the exact path, the bin means
-        on the binned path).
-    count (np.ndarray)
-        ``(n_cells,)`` rows per cell.
-    slope (np.ndarray)
-        ``(n_draws,)`` cross-fitted scale per draw.
-    rate (np.ndarray)
-        ``(n_draws,)`` known spike probability per frame, in (0, 1).
-    n_steps (int)
-        Maximum Newton iterations.
-
-    Returns
-    -------
-    intercept (np.ndarray)
-        ``(n_draws,)`` level-matched intercept.
-    """
-
-    rate = np.clip(np.asarray(rate, dtype=np.float64), 1e-12, 1.0 - 1e-12)
-    slope = np.asarray(slope, dtype=np.float64)
-    total = float(np.sum(count))
-    intercept = np.log(rate / (1.0 - rate))
-    for _ in range(n_steps):
-        linear = np.clip(centre[:, None] * slope[None, :] + intercept[None, :], -30.0, 30.0)
-        mean = 1.0 / (1.0 + np.exp(-linear))
-        gradient = count @ mean - total * rate
-        curvature = np.clip(count @ (mean * (1.0 - mean)), 1e-12, None)
-        step = np.clip(gradient / curvature, -5.0, 5.0)
-        intercept = intercept - step
-        if np.max(np.abs(step)) < 1e-10:
-            break
-    return intercept
-
-
 def _log_likelihood(eta: np.ndarray, y: np.ndarray, family: str) -> float:
     """Summed log-likelihood up to terms that cancel in a deviance ratio (Bernoulli logit or Poisson log)."""
     if family == "bernoulli":
@@ -934,8 +884,7 @@ def _log_likelihood(eta: np.ndarray, y: np.ndarray, family: str) -> float:
 
 
 def crossfitted_explained_deviance(x: np.ndarray, y: np.ndarray, group_index: np.ndarray, n_blocks: int,
-                                   family: str, n_steps: int, exposure: float = 1.0,
-                                   known_rate: float | None = None) -> tuple[float, float]:
+                                   family: str, n_steps: int, exposure: float = 1.0) -> tuple[float, float]:
     """
     Description
     -----------
@@ -947,13 +896,6 @@ def crossfitted_explained_deviance(x: np.ndarray, y: np.ndarray, group_index: np
     and the block is scored with it. The reference is the cross-fitted per-group intercepts alone, so both
     sides are out of sample. The scale is fitted rather than fixed at 1, since at a fixed scale the null
     draws score far below zero and the test loses its resolution.
-
-    With ``known_rate`` (Bernoulli, one group), the scored rows belong to a session whose level is already
-    known from rows of the same session that the model was fitted on: the rows are a block of a unit
-    recorded in one session, scored by a model fitted on its other blocks. The scale is cross-fitted as
-    above, but the level is not re-estimated on the scored rows: in every block the intercept is set so the
-    mean predicted probability equals ``known_rate`` (:func:`level_matched_intercept`), and the reference
-    predicts ``known_rate`` on every row. One session thus has one level, whichever of its rows are scored.
 
     Parameters
     ----------
@@ -971,29 +913,18 @@ def crossfitted_explained_deviance(x: np.ndarray, y: np.ndarray, group_index: np
         Maximum Newton iterations per calibration fit.
     exposure (float)
         Poisson exposure (bin width), entered as ``log(exposure)``; ignored for Bernoulli.
-    known_rate (float | None)
-        The scored session's spike probability per frame, estimated on its rows the model was fitted on;
-        None re-estimates the level on the scored rows. Bernoulli and a single group only.
 
     Returns
     -------
     explained_deviance (float)
-        Cross-fitted deviance explained over the cross-fitted intercepts-only reference (or the known-level
-        reference). Groups that cannot be cross-fitted are left out first
-        (:func:`drop_uncrossfittable_groups`): those whose response never varies, and those whose events
-        all fall in one block. NaN when the predictor is flat or nothing remains.
+        Cross-fitted deviance explained over the cross-fitted intercepts-only reference. Groups that cannot
+        be cross-fitted are left out first (:func:`drop_uncrossfittable_groups`): those whose response never
+        varies, and those whose events all fall in one block. NaN when the predictor is flat or nothing
+        remains.
     slope (float)
         Mean over blocks of the cross-fitted scale on the standardised predictor.
-
-    Raises
-    ------
-    ValueError
-        If ``known_rate`` is given with the Poisson family or more than one group.
     """
 
-    if known_rate is not None and (family != "bernoulli" or np.unique(group_index).size > 1):
-        msg = "a known level applies to Bernoulli scores of a single group (one block of one session)."
-        raise ValueError(msg)
     x, y, group_index = drop_uncrossfittable_groups(x, y, group_index, n_blocks, family)
     spread = float(np.std(x)) if np.size(x) else 0.0
     if spread < 1e-12 or y.size == 0 or float(np.sum(y)) == 0.0 or (family == "bernoulli" and y.min() == y.max()):
@@ -1016,20 +947,11 @@ def crossfitted_explained_deviance(x: np.ndarray, y: np.ndarray, group_index: np
             return np.nan, np.nan
         beta = newton(design[train], y[train], np.zeros(design.shape[1], dtype=np.float64), n_steps,
                       offset[train])
-        slopes.append(float(beta[0]))
-        if known_rate is not None:
-            # The block's level is the session's known rate; only the scale came from the other blocks.
-            level = float(level_matched_intercept(standardized[test], np.ones(int(test.sum())),
-                                                  np.array([beta[0]]), np.array([known_rate]), n_steps)[0])
-            rate = min(max(float(known_rate), 1e-12), 1.0 - 1e-12)
-            ll_model += _log_likelihood(beta[0] * standardized[test] + level, y[test], family)
-            ll_reference += _log_likelihood(np.full(int(test.sum()), np.log(rate / (1.0 - rate))), y[test],
-                                            family)
-            continue
         beta_reference = newton(dummies[train], y[train], np.zeros(dummies.shape[1], dtype=np.float64),
                                 n_steps, offset[train])
         ll_model += _log_likelihood(design[test] @ beta + offset[test], y[test], family)
         ll_reference += _log_likelihood(dummies[test] @ beta_reference + offset[test], y[test], family)
+        slopes.append(float(beta[0]))
     if family == "bernoulli":
         ll_saturated = 0.0
     else:
@@ -1042,7 +964,7 @@ def crossfitted_explained_deviance(x: np.ndarray, y: np.ndarray, group_index: np
 
 
 def batched_crossfitted_explained_deviance(eta: np.ndarray, labels: np.ndarray, n_blocks: int, n_steps: int,
-                                           n_bins: int, known_rate: np.ndarray | None = None) -> np.ndarray:
+                                           n_bins: int) -> np.ndarray:
     """
     Description
     -----------
@@ -1056,9 +978,6 @@ def batched_crossfitted_explained_deviance(eta: np.ndarray, labels: np.ndarray, 
     over equal-count bins (``n_bins > 0``); ``n_bins == 0`` treats every row as its own bin, i.e. exact.
     The reference's cross-fitted intercept is closed-form (the training rows' rate).
 
-    With ``known_rate`` (one value per draw), every block's level is fixed at that draw's known rate, as in
-    :func:`crossfitted_explained_deviance`, and the reference predicts it on every row.
-
     Parameters
     ----------
     eta (np.ndarray)
@@ -1071,9 +990,6 @@ def batched_crossfitted_explained_deviance(eta: np.ndarray, labels: np.ndarray, 
         Maximum Newton iterations.
     n_bins (int)
         Equal-count predictor bins, or 0 for the exact computation.
-    known_rate (np.ndarray | None)
-        ``(n_draws,)`` known spike probability per frame of the scored session, each computed from that
-        draw's labels at the session's training rows; None re-estimates the level on the scored rows.
 
     Returns
     -------
@@ -1146,13 +1062,9 @@ def batched_crossfitted_explained_deviance(eta: np.ndarray, labels: np.ndarray, 
             active = solvable & (np.maximum(np.abs(step_slope), np.abs(step_intercept)) >= 1e-9)
             if not np.any(active):
                 break
-        if known_rate is not None:
-            # The level is the session's known rate; only the scale came from the other blocks.
-            intercept = level_matched_intercept(centre_test, count_test, slope, known_rate, n_steps)
         linear_test = np.clip(centre_test[:, None] * slope[None, :] + intercept[None, :], -30.0, 30.0)
         ll_model += slope * cross_test + intercept * total_test - count_test @ np.logaddexp(0.0, linear_test)
-        rate = np.clip(total_train / n_train if known_rate is None else np.asarray(known_rate, dtype=np.float64),
-                       1e-12, 1.0 - 1e-12)
+        rate = np.clip(total_train / n_train, 1e-12, 1.0 - 1e-12)
         reference_intercept = np.log(rate / (1.0 - rate))
         ll_reference += reference_intercept * total_test - n_test * np.logaddexp(0.0, reference_intercept)
     scores = np.full(n_draws, np.nan, dtype=np.float64)
@@ -1161,8 +1073,158 @@ def batched_crossfitted_explained_deviance(eta: np.ndarray, labels: np.ndarray, 
     return scores
 
 
+def reference_cells(standardized: np.ndarray, n_bins: int) -> tuple[np.ndarray, np.ndarray, np.ndarray,
+                                                                      np.ndarray]:
+    """
+    Description
+    -----------
+    Group rows into equal-count cells of the standardised predictor for the predictor-side sums of a batched
+    logistic fit, or keep every row as its own cell (``n_bins == 0``, exact).
+
+    Parameters
+    ----------
+    standardized (np.ndarray)
+        Standardised predictor per row.
+    n_bins (int)
+        Equal-count bins, or 0 for one cell per row.
+
+    Returns
+    -------
+    count (np.ndarray)
+        Rows per occupied cell.
+    first (np.ndarray)
+        Sum of the predictor per occupied cell.
+    second (np.ndarray)
+        Sum of the squared predictor per occupied cell.
+    centre (np.ndarray)
+        Mean predictor per occupied cell.
+    """
+
+    if n_bins > 0:
+        edges = np.quantile(standardized, np.linspace(0.0, 1.0, n_bins + 1))
+        edges[0], edges[-1] = -np.inf, np.inf
+        assignment = np.clip(np.searchsorted(edges, standardized, side="right") - 1, 0, n_bins - 1)
+        n_cells = n_bins
+    else:
+        assignment = np.arange(standardized.size)
+        n_cells = standardized.size
+    count = np.bincount(assignment, minlength=n_cells).astype(np.float64)
+    first = np.bincount(assignment, weights=standardized, minlength=n_cells)
+    second = np.bincount(assignment, weights=standardized ** 2, minlength=n_cells)
+    occupied = count > 0
+    count, first, second = count[occupied], first[occupied], second[occupied]
+    return count, first, second, first / count
+
+
+def batched_transferred_calibration_scores(eta: np.ndarray, labels: np.ndarray, reference_eta: np.ndarray,
+                                           reference_labels: np.ndarray, n_steps: int,
+                                           n_bins: int) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Description
+    -----------
+    Explained deviance of a frozen predictor on scored rows whose calibration is carried over, unchanged,
+    from reference rows of the same recording session, for many label vectors at once.
+
+    This is how a block of a unit recorded in one session is scored. The model was fitted on the session's
+    other blocks, so the session's calibration is already known from them: the intercept and the scale of
+    ``logit P(spike) = a + b z`` are fitted on the reference rows (the training blocks' quiet anchors), and
+    the scored rows are judged by exactly that ``(a, b)``. The reference model is the training blocks' spike
+    rate, predicted on every scored row. Nothing is estimated on the scored rows, so no part of the session
+    gets a level of its own, and a block whose rate differs from the rest is predicted as well as the
+    predictor allows: a block that fires more because its predictor is higher is credited for it.
+
+    The predictor is standardised with the reference rows' mean and spread, so ``b`` is the scale on that
+    standardised predictor. Each column of ``labels`` pairs with the same column of ``reference_labels``
+    (one circular-shift draw relabels both); the responses enter through exact sums, and only the
+    predictor-side sums of the reference fit and of the scored log-likelihood are taken over equal-count
+    cells when ``n_bins > 0``.
+
+    Parameters
+    ----------
+    eta (np.ndarray)
+        Frozen predictor at the scored rows.
+    labels (np.ndarray)
+        ``(n_rows, n_draws)`` binary responses at the scored rows.
+    reference_eta (np.ndarray)
+        Frozen predictor at the reference rows.
+    reference_labels (np.ndarray)
+        ``(n_reference_rows, n_draws)`` binary responses at the reference rows.
+    n_steps (int)
+        Maximum Newton iterations of the reference fit.
+    n_bins (int)
+        Equal-count predictor cells, or 0 for the exact computation.
+
+    Returns
+    -------
+    scores (np.ndarray)
+        Explained deviance per draw; NaN where the reference rows hold no spike or nothing but spikes, where
+        the scored rows hold no spike or nothing but spikes, or where the reference predictor is flat.
+    slopes (np.ndarray)
+        The scale ``b`` per draw.
+    """
+
+    n_draws = labels.shape[1]
+    spread = float(np.std(reference_eta)) if np.size(reference_eta) else 0.0
+    if spread < 1e-12 or eta.size == 0 or n_draws == 0:
+        return np.full(n_draws, np.nan, dtype=np.float64), np.full(n_draws, np.nan, dtype=np.float64)
+    centre_value = float(np.mean(reference_eta))
+    standardized_reference = (reference_eta - centre_value) / spread
+    standardized = (eta - centre_value) / spread
+    reference_response = reference_labels.astype(np.float64, copy=False)
+    response = labels.astype(np.float64, copy=False)
+
+    cross_reference = standardized_reference @ reference_response
+    total_reference = reference_response.sum(axis=0)
+    n_reference = float(standardized_reference.size)
+    cross_scored = standardized @ response
+    total_scored = response.sum(axis=0)
+    n_scored = float(standardized.size)
+    usable = ((total_reference > 0.0) & (total_reference < n_reference)
+              & (total_scored > 0.0) & (total_scored < n_scored))
+
+    count, first, second, centre = reference_cells(standardized_reference, n_bins)
+    slope = np.zeros(n_draws, dtype=np.float64)
+    intercept = np.zeros(n_draws, dtype=np.float64)
+    active = usable.copy()
+    for _ in range(n_steps):
+        linear = np.clip(centre[:, None] * slope[None, :] + intercept[None, :], -30.0, 30.0)
+        mean = 1.0 / (1.0 + np.exp(-linear))
+        weights = np.clip(mean * (1.0 - mean), 1e-8, None)
+        gradient_slope = cross_reference - (first @ mean)
+        gradient_intercept = total_reference - (count @ mean)
+        hessian_ss = second @ weights
+        hessian_si = first @ weights
+        hessian_ii = count @ weights
+        determinant = hessian_ss * hessian_ii - hessian_si * hessian_si
+        solvable = active & (np.abs(determinant) > 1e-30)
+        if not np.any(solvable):
+            break
+        safe = np.where(solvable, determinant, 1.0)
+        step_slope = np.where(solvable, (hessian_ii * gradient_slope - hessian_si * gradient_intercept) / safe, 0.0)
+        step_intercept = np.where(solvable, (hessian_ss * gradient_intercept - hessian_si * gradient_slope) / safe,
+                                  0.0)
+        slope = slope + step_slope
+        intercept = intercept + step_intercept
+        active = solvable & (np.maximum(np.abs(step_slope), np.abs(step_intercept)) >= 1e-9)
+        if not np.any(active):
+            break
+
+    count_scored, _first_scored, _second_scored, centre_scored = reference_cells(standardized, n_bins)
+    linear_scored = np.clip(centre_scored[:, None] * slope[None, :] + intercept[None, :], -30.0, 30.0)
+    ll_model = slope * cross_scored + intercept * total_scored - count_scored @ np.logaddexp(0.0, linear_scored)
+    rate = np.clip(total_reference / n_reference, 1e-12, 1.0 - 1e-12)
+    reference_intercept = np.log(rate / (1.0 - rate))
+    ll_reference = reference_intercept * total_scored - n_scored * np.logaddexp(0.0, reference_intercept)
+
+    scores = np.full(n_draws, np.nan, dtype=np.float64)
+    valid = usable & (ll_reference < 0.0)
+    scores[valid] = (ll_model[valid] - ll_reference[valid]) / (-ll_reference[valid])
+    return scores, np.where(usable, slope, np.nan)
+
+
 def frozen_model_score(x: np.ndarray, y: np.ndarray, group_index: np.ndarray, n_steps: int, family: str,
-                       exposure: float, calibration: dict, known_rate: float | None = None) -> tuple[float, float]:
+                       exposure: float, calibration: dict,
+                       reference: tuple[np.ndarray, np.ndarray] | None = None) -> tuple[float, float]:
     """
     Description
     -----------
@@ -1172,6 +1234,11 @@ def frozen_model_score(x: np.ndarray, y: np.ndarray, group_index: np.ndarray, n_
     ``calibration["scheme"]`` selects the calibration: ``"crossfit"`` (the shipped scheme, see
     :func:`crossfitted_explained_deviance`) or ``"in_sample"`` (intercepts and scale refitted on the
     scored rows themselves).
+
+    With ``reference``, the scored rows are a block of a unit recorded in one session and the model was
+    fitted on the session's other blocks; the calibration is then fitted on those training rows and carried
+    over unchanged (:func:`batched_transferred_calibration_scores`, exact), under either scheme, since the
+    session's calibration is already known.
 
     Parameters
     ----------
@@ -1189,35 +1256,41 @@ def frozen_model_score(x: np.ndarray, y: np.ndarray, group_index: np.ndarray, n_
         Poisson exposure; ignored for Bernoulli.
     calibration (dict)
         The ``kinematic_encoding.calibration`` block: ``scheme`` and ``n_blocks``.
-    known_rate (float | None)
-        The scored session's spike probability per frame, known from its rows the model was fitted on (a
-        block of a unit recorded in one session); None re-estimates the level on the scored rows. See
-        :func:`crossfitted_explained_deviance`.
+    reference (tuple[np.ndarray, np.ndarray] | None)
+        Frozen predictor and 0/1 labels at the training rows of the scored block's recording session; None
+        when the scored rows are a whole session (its calibration is then estimated as the scheme says).
 
     Returns
     -------
     explained_deviance (float)
         The score.
     slope (float)
-        The scale on the standardised predictor (cross-fitted mean, or the in-sample fit).
+        The scale on the standardised predictor (cross-fitted mean, the in-sample fit, or the scale fitted
+        on the reference rows).
 
     Raises
     ------
     ValueError
-        If the scheme is unknown, or a known level is given under the in-sample scheme, which re-estimates
-        every level on the scored rows by construction.
+        If the scheme is unknown, or ``reference`` is given with the Poisson family or more than one group.
     """
 
     scheme = calibration["scheme"]
     if scheme not in CALIBRATION_SCHEMES:
         msg = f"kinematic_encoding.calibration.scheme must be one of {CALIBRATION_SCHEMES}; got {scheme!r}."
         raise ValueError(msg)
+    if reference is not None:
+        if family != "bernoulli" or np.unique(group_index).size > 1:
+            msg = "a transferred calibration applies to Bernoulli scores of a single group (one block of one session)."
+            raise ValueError(msg)
+        reference_eta, reference_y = reference
+        scores, slopes = batched_transferred_calibration_scores(
+            np.asarray(x, dtype=np.float64), np.asarray(y, dtype=np.float64)[:, None],
+            np.asarray(reference_eta, dtype=np.float64), np.asarray(reference_y, dtype=np.float64)[:, None],
+            n_steps, 0)
+        return float(scores[0]), float(slopes[0])
     if scheme == "crossfit":
         return crossfitted_explained_deviance(x, y, group_index, int(calibration["n_blocks"]), family, n_steps,
-                                              exposure, known_rate)
-    if known_rate is not None:
-        msg = "a known level is defined only for the cross-fitted calibration (calibration.scheme 'crossfit')."
-        raise ValueError(msg)
+                                              exposure)
     if family == "poisson":
         return pooled_poisson_explained_deviance(x, y, group_index, n_steps, exposure)
     if np.unique(group_index).size == 1:
@@ -1226,7 +1299,8 @@ def frozen_model_score(x: np.ndarray, y: np.ndarray, group_index: np.ndarray, n_
 
 
 def frozen_model_null_scores(eta: np.ndarray, labels: np.ndarray, n_steps: int, n_bins: int,
-                             calibration: dict, known_rate: np.ndarray | None = None) -> np.ndarray:
+                             calibration: dict, reference_eta: np.ndarray | None = None,
+                             reference_labels: np.ndarray | None = None) -> np.ndarray:
     """
     Description
     -----------
@@ -1244,9 +1318,12 @@ def frozen_model_null_scores(eta: np.ndarray, labels: np.ndarray, n_steps: int, 
         Equal-count predictor bins for the fast path; 0 for exact.
     calibration (dict)
         The ``kinematic_encoding.calibration`` block.
-    known_rate (np.ndarray | None)
-        ``(n_draws,)`` known spike probability per frame of the scored session under each draw; None
-        re-estimates the level on the scored rows (see :func:`frozen_model_score`).
+    reference_eta (np.ndarray | None)
+        Frozen predictor at the training frames of the scored block's recording session; None when the
+        scored frames are a whole session. See :func:`frozen_model_score`.
+    reference_labels (np.ndarray | None)
+        ``(n_reference_frames, n_draws)`` binary responses at those training frames under each draw; given
+        together with ``reference_eta``.
 
     Returns
     -------
@@ -1256,19 +1333,21 @@ def frozen_model_null_scores(eta: np.ndarray, labels: np.ndarray, n_steps: int, 
     Raises
     ------
     ValueError
-        If the scheme is unknown, or a known level is given under the in-sample scheme.
+        If the scheme is unknown, or only one of ``reference_eta`` and ``reference_labels`` is given.
     """
 
     scheme = calibration["scheme"]
     if scheme not in CALIBRATION_SCHEMES:
         msg = f"kinematic_encoding.calibration.scheme must be one of {CALIBRATION_SCHEMES}; got {scheme!r}."
         raise ValueError(msg)
-    if scheme == "crossfit":
-        return batched_crossfitted_explained_deviance(eta, labels, int(calibration["n_blocks"]), n_steps, n_bins,
-                                                      known_rate)
-    if known_rate is not None:
-        msg = "a known level is defined only for the cross-fitted calibration (calibration.scheme 'crossfit')."
+    if (reference_eta is None) != (reference_labels is None):
+        msg = "reference_eta and reference_labels are given together or not at all."
         raise ValueError(msg)
+    if reference_eta is not None:
+        return batched_transferred_calibration_scores(eta, labels, reference_eta, reference_labels, n_steps,
+                                                      n_bins)[0]
+    if scheme == "crossfit":
+        return batched_crossfitted_explained_deviance(eta, labels, int(calibration["n_blocks"]), n_steps, n_bins)
     if n_bins > 0:
         return binned_calibrated_explained_deviance(eta, labels, n_steps, n_bins)
     return batched_calibrated_explained_deviance(eta, labels, n_steps)

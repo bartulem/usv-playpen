@@ -38,10 +38,10 @@ from .kinematic_encoding import (
     fit_quiet_model,
     forward_select,
     frozen_null_scores,
-    known_level_rate,
     linear_predictor_at_frames,
     quiet_block_sessions,
-    same_session_frames,
+    reference_rows,
+    same_session_reference,
     screen_features,
     spike_triggered_average,
 )
@@ -495,14 +495,14 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
                                            session["quiet"], n_lags, encoding["chunk_rows"])
     labels_quiet = spike_labels_at_frames(session["spike_frames"], session["quiet"],
                                           session["n_frames"])
-    # A held-out block is scored at its recording's level, read from the training blocks; a held-out
-    # session's level is estimated on its own frames.
-    reference_frames = same_session_frames(per_session, pool_ids, test_id)
+    # A held-out block is scored with its recording's calibration, fitted on the training blocks; a held-out
+    # session's calibration is estimated on its own frames.
+    reference = same_session_reference(per_session, pool_ids, test_id, estimator, selected, n_lags,
+                                       encoding["chunk_rows"])
     quiet_score, quiet_slope = frozen_model_score(eta_quiet, labels_quiet,
                                                   np.zeros(labels_quiet.size, dtype=np.int64),
                                                   encoding["solver"]["calibration_steps"], "bernoulli", 1.0,
-                                                  encoding["calibration"],
-                                                  known_level_rate(session, reference_frames))
+                                                  encoding["calibration"], reference_rows(reference))
 
     def draw_quiet_null(count):
         """Fresh quiet-null draws for the escalation ladder; the generator carries on where it left off."""
@@ -511,7 +511,7 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
                                   settings["inference"]["shuffle_guard_seconds"],
                                   encoding["solver"]["calibration_steps"],
                                   encoding["solver"]["null_calibration_bins"], encoding["calibration"],
-                                  encoding["null_block_megabytes"], reference_frames)
+                                  encoding["null_block_megabytes"], reference)
 
     quiet_null = draw_quiet_null(settings["inference"]["n_shuffles"])
     quiet_p, quiet_at_floor, quiet_null = escalated_empirical_pvalue(
@@ -820,14 +820,14 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
                                            session["quiet"], n_lags, encoding["chunk_rows"])
     labels_quiet = spike_labels_at_frames(session["spike_frames"], session["quiet"],
                                           session["n_frames"])
-    # A held-out block is scored at its recording's level, read from the training blocks; a held-out
-    # session's level is estimated on its own frames.
-    reference_frames = same_session_frames(per_session, fit_ids, held_out)
+    # A held-out block is scored with its recording's calibration, fitted on the training blocks; a held-out
+    # session's calibration is estimated on its own frames.
+    reference = same_session_reference(per_session, fit_ids, held_out, estimator, selected, n_lags,
+                                       encoding["chunk_rows"])
     quiet_score, quiet_slope = frozen_model_score(eta_quiet, labels_quiet,
                                                   np.zeros(labels_quiet.size, dtype=np.int64),
                                                   encoding["solver"]["calibration_steps"], "bernoulli", 1.0,
-                                                  encoding["calibration"],
-                                                  known_level_rate(session, reference_frames))
+                                                  encoding["calibration"], reference_rows(reference))
 
     def draw_quiet_null(count):
         """Fresh quiet-null draws for the escalation ladder; the generator carries on where it left off."""
@@ -836,7 +836,7 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
                                   settings["inference"]["shuffle_guard_seconds"],
                                   encoding["solver"]["calibration_steps"],
                                   encoding["solver"]["null_calibration_bins"], encoding["calibration"],
-                                  encoding["null_block_megabytes"], reference_frames)
+                                  encoding["null_block_megabytes"], reference)
 
     quiet_null = draw_quiet_null(settings["inference"]["n_shuffles"])
     quiet_p, quiet_at_floor, quiet_null = escalated_empirical_pvalue(

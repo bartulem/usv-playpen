@@ -45,11 +45,11 @@ from usv_playpen.neural_modeling.kinematic_encoding import (
     forward_select,
     frozen_null_scores,
     in_sample_pool_score,
-    known_level_rate,
     lag_basis,
     linear_predictor_at_frames,
     quiet_block_sessions,
     same_session_frames,
+    same_session_reference,
     screen_features,
     spike_triggered_average,
     step_shift_test,
@@ -2348,7 +2348,7 @@ class TestAggregateFoldNulls:
 
 class TestBlocksShareTheirRecording:
     """Blocks of one recording are units of holding out, not recordings: they share its baseline, its
-    calibration group and its level."""
+    calibration group and, when one of them is scored, its calibration."""
 
     @staticmethod
     def _blocks() -> dict:
@@ -2389,13 +2389,13 @@ class TestBlocksShareTheirRecording:
         assert model.training_set_["baseline_sessions"] == ["s"]
         assert model.training_set_["session_baselines"] == [0.0]
 
-    def test_the_scored_blocks_level_is_read_from_its_recordings_training_blocks(self):
+    def test_the_scored_blocks_calibration_rows_are_its_recordings_training_blocks(self):
         """
         Description
         -----------
-        A held-out block's reference frames are the quiet anchors of the other blocks of its recording
-        that the model was fitted on, and its known rate is the spike fraction over them; a held-out
-        session, whose recording has no training rows, has none.
+        A held-out block's reference rows are the quiet anchors of the other blocks of its recording that
+        the model was fitted on, with the frozen predictor and the spike labels at them; a held-out session,
+        whose recording has no training rows, has none.
 
         Parameters
         ----------
@@ -2407,14 +2407,21 @@ class TestBlocksShareTheirRecording:
         """
         blocks = self._blocks()
         ids = list(blocks)
+        encoding = _settings()["kinematic_encoding"]
+        model, _rate = fit_quiet_model(blocks, ids[1:], [0], N_LAGS, np.random.default_rng(0), encoding,
+                                       message_output=_silent)
         frames = same_session_frames(blocks, ids[1:], ids[0])
         np.testing.assert_array_equal(frames, np.sort(np.concatenate([blocks[i]["quiet"] for i in ids[1:]])))
         session = blocks[ids[0]]
-        expected = float(np.mean(spike_labels_at_frames(session["spike_frames"], frames, session["n_frames"])))
-        assert known_level_rate(session, frames) == pytest.approx(expected, rel=1e-12)
+        reference = same_session_reference(blocks, ids[1:], ids[0], model, [0], N_LAGS, encoding["chunk_rows"])
+        np.testing.assert_array_equal(reference["frames"], frames)
+        np.testing.assert_array_equal(reference["labels"],
+                                      spike_labels_at_frames(session["spike_frames"], frames, session["n_frames"]))
+        np.testing.assert_allclose(reference["eta"], linear_predictor_at_frames(
+            model, session["feature_time_series"], [0], frames, N_LAGS, encoding["chunk_rows"]), rtol=1e-12)
         other = {"t": _planted_session(171, [1.0], n_frames=3000)}
         assert same_session_frames({**blocks, **other}, ids, "t") is None
-        assert known_level_rate(other["t"], None) is None
+        assert same_session_reference({**blocks, **other}, ids, "t", model, [0], N_LAGS, encoding["chunk_rows"]) is None
 
     def test_the_pooled_score_gives_one_group_to_one_recording(self):
         """
@@ -2446,12 +2453,12 @@ class TestBlocksShareTheirRecording:
                                        encoding["calibration"])[0]
         assert in_sample_pool_score(blocks, ids, model, [0], N_LAGS, encoding) == pytest.approx(one_group, rel=1e-12)
 
-    def test_each_null_draw_rereads_the_known_level_under_its_shift(self):
+    def test_each_null_draw_refits_the_calibration_under_its_shift(self):
         """
         Description
         -----------
-        With reference frames, every null draw must equal the frozen score of the shifted labels at the
-        known rate read from the reference frames under the same shift.
+        With a reference, every null draw must equal the frozen score of the shifted labels with the
+        calibration refitted on the reference frames' labels under the same shift.
 
         Parameters
         ----------
@@ -2464,8 +2471,11 @@ class TestBlocksShareTheirRecording:
         blocks = self._blocks()
         ids = list(blocks)
         session = blocks[ids[0]]
-        reference = same_session_frames(blocks, ids[1:], ids[0])
-        eta = np.random.default_rng(2).normal(size=session["quiet"].size)
+        frames = same_session_frames(blocks, ids[1:], ids[0])
+        rng = np.random.default_rng(2)
+        eta = rng.normal(size=session["quiet"].size)
+        reference = {"frames": frames, "eta": rng.normal(size=frames.size),
+                     "labels": spike_labels_at_frames(session["spike_frames"], frames, session["n_frames"])}
         null = frozen_null_scores(eta, session["quiet"], session["spike_frames"], session["n_frames"], FPS, 4,
                                   np.random.default_rng(3), 10.0, 40, 0, NULL_CALIBRATION, 32.0, reference)
         replay = np.random.default_rng(3)
@@ -2473,8 +2483,7 @@ class TestBlocksShareTheirRecording:
         for draw, shift in enumerate(shifts):
             shifted = shifted_spike_frames(session["spike_frames"], shift, FPS, session["n_frames"])
             labels = spike_labels_at_frames(shifted, session["quiet"], session["n_frames"])
-            rate = float(np.mean(spike_labels_at_frames(shifted, reference, session["n_frames"])))
+            reference_labels = spike_labels_at_frames(shifted, frames, session["n_frames"])
             expected = frozen_model_score(eta, labels, np.zeros(labels.size, dtype=np.int64), 40, "bernoulli",
-                                          1.0, NULL_CALIBRATION, rate)[0]
+                                          1.0, NULL_CALIBRATION, (reference["eta"], reference_labels))[0]
             assert null[draw] == pytest.approx(expected, rel=1e-9, abs=1e-12)
-

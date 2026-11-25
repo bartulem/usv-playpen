@@ -9,8 +9,8 @@ offset and one baseline per recording session, with each filter parametrised on 
 
 A unit recorded in one session, and the inner split of a pool of one session, work on contiguous blocks
 of that session in place of sessions. The blocks define what is held out and nothing else: they share
-the session's baseline in every fit, its level when one of them is scored (:func:`same_session_frames`),
-and its circular shift in every null.
+the session's baseline in every fit, its calibration when one of them is scored
+(:func:`same_session_reference`), and its circular shift in every null.
 
 The module provides:
 - the fit (:func:`fit_quiet_model`, :func:`lag_basis`, :class:`FrameFilterModel`) and its frozen linear
@@ -20,7 +20,8 @@ The module provides:
 - greedy forward selection, each step decided by the per-step shift test (:func:`forward_select`,
   :func:`step_shift_test`, :func:`in_sample_pool_score`);
 - the inner splits (:func:`inner_folds`, and :func:`quiet_block_sessions` for a single-session pool), and
-  the session's own training frames that fix a scored block's level (:func:`same_session_frames`);
+  the session's own training frames on which a scored block's calibration is fitted
+  (:func:`same_session_frames`, :func:`same_session_reference`);
 - the stored descriptors: the block-resampled filter band, filter shape summaries and the spike-triggered
   average.
 """
@@ -246,12 +247,12 @@ def same_session_frames(per_session: dict, train_session_ids: list, scored_id: s
     The quiet anchors of the scored session's own recording among the training sessions, or None when
     there are none.
 
-    A held-out session's level is unknown to a model fitted on other sessions, so its score estimates the
-    level on the scored frames. A held-out block is different: the model was fitted on other blocks of
-    the same recording, so the session's level is already known from them. These are the frames it is
-    read from: the training blocks of the scored block's recording. Their spike rate is the level the
-    block is scored at (:func:`deviance_metrics.frozen_model_score`, ``known_rate``), and a circular-shift
-    null recomputes it from the same frames under each shift (:func:`frozen_null_scores`).
+    A held-out session's calibration is unknown to a model fitted on other sessions, so its score
+    estimates it on the scored frames. A held-out block is different: the model was fitted on other blocks
+    of the same recording, so the session's calibration is already known from them. These are the frames
+    it is fitted on: the training blocks of the scored block's recording
+    (:func:`same_session_reference`, :func:`deviance_metrics.frozen_model_score`), and a circular-shift
+    null refits it on the same frames under each shift (:func:`frozen_null_scores`).
 
     Parameters
     ----------
@@ -277,30 +278,72 @@ def same_session_frames(per_session: dict, train_session_ids: list, scored_id: s
     return np.sort(np.concatenate(parts))
 
 
-def known_level_rate(session: dict, reference_frames: np.ndarray | None) -> float | None:
+def same_session_reference(per_session: dict, train_session_ids: list, scored_id: str, estimator,
+                           feature_indices: list, n_lags: int, chunk_rows: int) -> dict | None:
     """
     Description
     -----------
-    The scored session's spike probability per quiet frame, read from its training frames
-    (:func:`same_session_frames`); None when there are none.
+    The rows a held-out block's calibration is fitted on: the frozen predictor and the spike labels at the
+    quiet anchors of the block's own recording among the training sessions (:func:`same_session_frames`);
+    None when the scored session's recording has no training rows (a held-out session).
+
+    Blocks of one recording share its spike train and feature series, and their anchors are frames of the
+    recording, so the predictor and the labels at the training blocks' anchors are read from the scored
+    block's own arrays.
 
     Parameters
     ----------
-    session (dict)
-        The scored session's assembled data; ``spike_frames`` and ``n_frames`` are read. Blocks of one
-        recording share its spike train, so the training blocks' labels come from the same train.
-    reference_frames (np.ndarray | None)
-        The training frames of the same recording.
+    per_session (dict)
+        Assembled session data (sessions or quiet-block pseudo-sessions).
+    train_session_ids (list)
+        The sessions the scoring model was fitted on.
+    scored_id (str)
+        The session or block being scored.
+    estimator (FrameFilterModel)
+        The frozen model.
+    feature_indices (list)
+        Feature columns the model uses.
+    n_lags (int)
+        History length in frames.
+    chunk_rows (int)
+        Rows per chunk of the lagged design.
 
     Returns
     -------
-    rate (float | None)
-        Fraction of the reference frames holding a spike, or None.
+    reference (dict | None)
+        ``frames`` (sorted anchors), ``eta`` (frozen predictor at them) and ``labels`` (0/1 spike labels at
+        them), or None.
     """
 
-    if reference_frames is None or reference_frames.size == 0:
+    frames = same_session_frames(per_session, train_session_ids, scored_id)
+    if frames is None:
         return None
-    return float(np.mean(spike_labels_at_frames(session["spike_frames"], reference_frames, session["n_frames"])))
+    session = per_session[scored_id]
+    eta = linear_predictor_at_frames(estimator, session["feature_time_series"], feature_indices, frames, n_lags,
+                                     chunk_rows)
+    labels = spike_labels_at_frames(session["spike_frames"], frames, session["n_frames"])
+    return {"frames": frames, "eta": eta, "labels": labels}
+
+
+def reference_rows(reference: dict | None) -> tuple[np.ndarray, np.ndarray] | None:
+    """
+    Description
+    -----------
+    The ``(eta, labels)`` pair :func:`deviance_metrics.frozen_model_score` takes from a
+    :func:`same_session_reference` record, or None.
+
+    Parameters
+    ----------
+    reference (dict | None)
+        A :func:`same_session_reference` record.
+
+    Returns
+    -------
+    rows (tuple[np.ndarray, np.ndarray] | None)
+        Frozen predictor and labels at the reference frames, or None.
+    """
+
+    return None if reference is None else (reference["eta"], reference["labels"])
 
 
 def fit_quiet_model(per_session: dict, train_session_ids: list, feature_indices: list, n_lags: int,
@@ -451,7 +494,8 @@ def fit_quiet_model(per_session: dict, train_session_ids: list, feature_indices:
                                if basis is not None else None)
     # A held-out session's level is unknown to the model, so the returned intercept is the anchor-weighted
     # mean baseline; a consumer scoring a held-out session recalibrates it on the scored frames, and one
-    # scoring a block of a training recording fixes it at that recording's rate (`same_session_frames`).
+    # scoring a block of a training recording calibrates it on that recording's training blocks
+    # (`same_session_reference`).
     intercept = float(solver.intercept_) + float(np.average(deltas, weights=weights))
     if basis is None:
         solver.intercept_ = intercept
@@ -524,16 +568,17 @@ def linear_predictor_at_frames(estimator, feature_time_series: np.ndarray, featu
 def frozen_null_scores(eta: np.ndarray, frames: np.ndarray, spike_frames: np.ndarray, n_frames: int,
                        fps: float, n_shuffles: int, rng, guard_seconds: float,
                        calibration_steps: int, calibration_bins: int, calibration: dict,
-                       null_block_megabytes: float, reference_frames: np.ndarray | None = None) -> np.ndarray:
+                       null_block_megabytes: float, reference: dict | None = None) -> np.ndarray:
     """
     Description
     -----------
     Null distribution of the calibrated score: circularly shift the scored session's spike train, relabel
     the same frames, and re-score the same frozen ``eta``. Nothing is refitted.
 
-    When the scored frames are a block whose level is known from the same recording's training frames
-    (``reference_frames``, see :func:`same_session_frames`), each draw reads that level from the training
-    frames under the same shift, exactly as the observed score reads it from the unshifted train.
+    When the scored frames are a block whose calibration is fitted on the same recording's training frames
+    (``reference``, see :func:`same_session_reference`), each draw relabels those frames under the same
+    shift and refits the calibration on them, exactly as the observed score fits it on the unshifted
+    train.
 
     Parameters
     ----------
@@ -565,9 +610,10 @@ def frozen_null_scores(eta: np.ndarray, frames: np.ndarray, spike_frames: np.nda
         Memory budget for the label matrix of one block of draws (``kinematic_encoding.null_block_megabytes``).
         The Newton iteration holds several ``(n_frames, block)`` float64 arrays at once, so the working set
         is a few times this. It sets only how many draws run together; the scores do not depend on it.
-    reference_frames (np.ndarray | None)
-        Training frames of the scored block's recording, from which each draw's known level is read; None
-        when the scored session's level is estimated on the scored frames.
+    reference (dict | None)
+        The :func:`same_session_reference` record of the scored block (its recording's training frames and
+        the frozen predictor at them); None when the scored session's calibration is estimated on the
+        scored frames.
 
     Returns
     -------
@@ -580,20 +626,23 @@ def frozen_null_scores(eta: np.ndarray, frames: np.ndarray, spike_frames: np.nda
 
     # eta is frozen across draws, so the draws batch; the block is sized by memory, not by draw count.
     block_bytes = int(null_block_megabytes * 1024 * 1024)
-    block = int(max(1, min(n_shuffles, block_bytes // max(1, frames.size * 8))))
+    n_rows = frames.size + (0 if reference is None else reference["frames"].size)
+    block = int(max(1, min(n_shuffles, block_bytes // max(1, n_rows * 8))))
 
     null = np.empty(n_shuffles, dtype=np.float64)
     for start in range(0, n_shuffles, block):
         stop = min(start + block, n_shuffles)
         labels = np.empty((frames.size, stop - start), dtype=np.float64)
-        known_rate = None if reference_frames is None else np.empty(stop - start, dtype=np.float64)
+        reference_labels = (None if reference is None
+                            else np.empty((reference["frames"].size, stop - start), dtype=np.float64))
         for column, draw in enumerate(range(start, stop)):
             shifted = shifted_spike_frames(spike_frames, shifts[draw], fps, n_frames)
             labels[:, column] = spike_labels_at_frames(shifted, frames, n_frames)
-            if known_rate is not None:
-                known_rate[column] = float(np.mean(spike_labels_at_frames(shifted, reference_frames, n_frames)))
-        null[start:stop] = frozen_model_null_scores(eta, labels, calibration_steps, calibration_bins,
-                                                    calibration, known_rate)
+            if reference_labels is not None:
+                reference_labels[:, column] = spike_labels_at_frames(shifted, reference["frames"], n_frames)
+        null[start:stop] = frozen_model_null_scores(eta, labels, calibration_steps, calibration_bins, calibration,
+                                                    None if reference is None else reference["eta"],
+                                                    reference_labels)
     return null
 
 
@@ -694,11 +743,12 @@ def screen_features(per_session: dict, pool_session_ids: list, n_lags: int, rng,
                                              session["quiet"], n_lags, encoding["chunk_rows"])
             labels = spike_labels_at_frames(session["spike_frames"], session["quiet"],
                                             session["n_frames"])
-            # A validation block is scored at its recording's level, read from the training blocks.
-            reference_frames = same_session_frames(per_session, train_ids, validation_id)
+            # A validation block is scored with its recording's calibration, fitted on the training blocks.
+            reference = same_session_reference(per_session, train_ids, validation_id, estimator, [feature], n_lags,
+                                               encoding["chunk_rows"])
             score, slope = frozen_model_score(eta, labels, np.zeros(labels.size, dtype=np.int64),
                                               encoding["solver"]["calibration_steps"], "bernoulli", 1.0,
-                                              encoding["calibration"], known_level_rate(session, reference_frames))
+                                              encoding["calibration"], reference_rows(reference))
             fold_scores.append(score)
             fold_slopes.append(slope)
             fold_nulls.append(frozen_null_scores(
@@ -706,7 +756,7 @@ def screen_features(per_session: dict, pool_session_ids: list, n_lags: int, rng,
                 settings["inference"]["screen_n_shuffles"], rng, settings["inference"]["shuffle_guard_seconds"],
                 encoding["solver"]["calibration_steps"],
                 encoding["solver"]["null_calibration_bins"], encoding["calibration"],
-                encoding["null_block_megabytes"], reference_frames))
+                encoding["null_block_megabytes"], reference))
         score = finite_mean(np.asarray(fold_scores))
         slope = finite_mean(np.asarray(fold_slopes))
         null = aggregate_fold_nulls(np.asarray(fold_scores), fold_nulls)
@@ -1014,11 +1064,12 @@ def forward_select(per_session: dict, pool_session_ids: list, survivors: list, n
                                              session["quiet"], n_lags, encoding["chunk_rows"])
             labels = spike_labels_at_frames(session["spike_frames"], session["quiet"],
                                             session["n_frames"])
-            # A validation block is scored at its recording's level, read from the training blocks.
-            known_rate = known_level_rate(session, same_session_frames(per_session, train_ids, validation_id))
+            # A validation block is scored with its recording's calibration, fitted on the training blocks.
+            reference = same_session_reference(per_session, train_ids, validation_id, estimator, columns, n_lags,
+                                               encoding["chunk_rows"])
             values.append(frozen_model_score(eta, labels, np.zeros(labels.size, dtype=np.int64),
                                              encoding["solver"]["calibration_steps"], "bernoulli", 1.0,
-                                             encoding["calibration"], known_rate)[0])
+                                             encoding["calibration"], reference_rows(reference))[0])
         return np.asarray(values, dtype=np.float64), converged
 
     selected, path = [], []
