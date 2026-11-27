@@ -439,8 +439,15 @@ def load_session_usvs(data_root: str, session_id: str, csv_sep: str = ",") -> pl
 
 VOCALIZATION_SCOPES = ("analysed", "guard")
 
-# How a unit's feature frames are z-scored: across its sessions together (its own kinematic model) or each
-# session alone (the convention the cohort behaviour controls were fitted under).
+# How a unit's feature frames are z-scored. The scale follows the grain of the model that reads them:
+# - "pooled": across the unit's sessions together, for the unit's own kinematic models, whose one filter
+#   is shared by its sessions (their differences in level go to the per-session baselines);
+# - "per_session": each session on its own mean and spread, for the cohort behaviour controls. The nested
+#   tests those controls serve are within-session throughout (spike counts relative to a per-session
+#   exposure, nulls drawn within a session), so a unit can only add information about what happens within
+#   a session, and the behaviour it is compared against is expressed relative to its own session too.
+#   A within-session scale also needs nothing from the control's training sessions, so a control is applied
+#   to a day it was not fitted on without carrying a scale to it.
 STANDARDISATIONS = ("pooled", "per_session")
 
 
@@ -842,10 +849,12 @@ def assemble_unit_sessions(
     Assemble, for every session of a cohort unit, the arrays the encoder needs: the z-scored per-frame
     feature time series (NaNs imputed to 0), the integer spike-frame train, the quiet anchor frames and
     the session's track names (which the transfer resolves its emitter against). Under ``'pooled'`` the
-    features are z-scored across all the unit's sessions together (they are same-day blocks with the
-    same mice, so feature columns align across them), which is what the unit's own kinematic model is
-    fitted on; under ``'per_session'`` each session is z-scored alone, which is how the cohort behaviour
-    controls were fitted and therefore what their inputs must be when a control is applied to the unit.
+    features are z-scored across all the unit's sessions together (they are same-day blocks of one
+    recorded mouse carrying the same feature columns, whichever partner a session held), which is what
+    the unit's own kinematic model is fitted on. Under ``'per_session'`` each session is z-scored on its
+    own mean and spread, which is the scale of the cohort behaviour controls and therefore what their
+    inputs must be when a control is applied to the unit: the nested tests are within-session (see
+    ``STANDARDISATIONS``), so their behaviour control is expressed relative to its own session.
 
     For a unit tested on blocks of one session, every block shares that session's arrays and differs
     only in its ``window`` and in its quiet anchors, which are clipped to the window. The spike train and

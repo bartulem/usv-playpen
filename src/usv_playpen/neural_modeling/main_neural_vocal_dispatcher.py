@@ -1128,7 +1128,9 @@ def run_nested_vocal_decoding(unit: dict, events: dict, settings: dict, data_roo
 
     The unit's kinematics are assembled once, z-scored per session as the controls were fitted (the
     unit's own kinematic model pools its sessions; a control's inputs must be on the scale it was
-    fitted on), and each target's design is built from them on its own control's features (the torus,
+    fitted on, and that scale is within-session because the nested tests are: see
+    ``behaviour_control_model``), and each target's design is built from them on its own control's
+    features (the torus,
     categorical and onset controls were selected separately and use different features). The kinematic
     data are released before any null starts. Each target is then written as its own section,
     ``nested_vocal_decoding_<target>``, by :func:`run_manifold_nested_decoding`,

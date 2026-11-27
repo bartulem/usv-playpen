@@ -12,6 +12,20 @@ Two stages share one assembly (:func:`assemble_cohort`):
   day, with a paired one-standard-error acceptance rule;
 - :func:`fit_control_models` -- fits the selected features once per held-out recording day.
 
+Every control reads its features z-scored within each session, on that session's own mean and spread
+(each session is assembled alone, and the unit side builds its inputs the same way,
+``assemble_unit_sessions(standardise="per_session")``). The scale follows the grain of the test the
+control serves. The nested tests are within-session throughout: a unit's spike counts enter relative
+to a per-session exposure and the nulls are drawn within a session, so a unit can only add information
+about which vocalization occurs, or whether one begins, within a session. The behaviour it is compared
+against is therefore expressed relative to its own session as well, and a pooled scale would hand the
+control between-session differences in behavioural level that the unit's side has had removed. A
+within-session scale also needs nothing from the training sessions, so a fold is applied to the day it
+held out without carrying a scale to it. This differs by design from the behavioural modelling, which
+pools its scale across sessions because its filters are reported and compared across them, and from a
+unit's own kinematic models, which pool across the unit's sessions and absorb their levels in
+per-session baselines.
+
 Both write an artifact that the per-unit run reads and checks (:func:`load_control_model`) and never
 recomputes. :func:`apply_behaviour_control` swaps a unit's raw behaviour block for the four
 sine/cosine columns of the control's prediction from the fold that did not see the unit's day. Torus
